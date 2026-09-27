@@ -71,11 +71,42 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
     }
   }, [user]);
 
-  // Customer sees their own orders
-  const allOrders = storageService.getOrders();
-  const orders = allOrders.filter(
-    (o) => !user || o.customerId === user.id || (user.phone && o.shippingAddress.phone.includes(user.phone))
-  );
+  // Customer orders directly loaded from Firestore (Source of truth)
+  const [customerOrders, setCustomerOrders] = useState<Order[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setCustomerOrders([]);
+      return;
+    }
+
+    setOrdersLoading(true);
+    storageService.fetchCustomerOrders(user.id)
+      .then((list) => {
+        setCustomerOrders(list);
+        setOrdersLoading(false);
+      })
+      .catch((err) => {
+        console.warn('Customer initial orders fetch notice:', err);
+        setOrdersLoading(false);
+      });
+
+    // Real-time onSnapshot listener for customer's orders in Firestore
+    const unsub = storageService.subscribeCustomerOrders(user.id, (list) => {
+      setCustomerOrders(list);
+      setOrdersLoading(false);
+    }, (err) => {
+      console.warn('Customer orders listener notice:', err);
+      setOrdersLoading(false);
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [user?.id]);
+
+  const orders = customerOrders;
   const wishlistIds = storageService.getWishlist();
   const allProducts = storageService.getProducts();
   const wishlistProducts = allProducts.filter((p) => wishlistIds.includes(p.id));

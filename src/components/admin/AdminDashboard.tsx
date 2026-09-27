@@ -144,6 +144,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Reactive Data
   const [orders, setOrders] = useState<Order[]>(() => storageService.getOrders());
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>(() => storageService.getProducts());
   const [coupons, setCoupons] = useState<Coupon[]>(() => storageService.getCoupons());
   const [slides, setSlides] = useState<HeroSlide[]>(() => storageService.getHeroSlides());
@@ -185,9 +187,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setConfirmModal((prev) => ({ ...prev, isOpen: false }));
   };
 
+  // Directly load and subscribe to Firestore orders for admin (Source of Truth: Firestore)
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    setOrdersLoading(true);
+    storageService.fetchAdminOrders()
+      .then((list) => {
+        setOrders(list);
+        setOrdersLoading(false);
+        setOrdersError(null);
+      })
+      .catch((err) => {
+        console.error('Admin initial orders fetch notice:', err);
+        setOrdersLoading(false);
+      });
+
+    // Real-time onSnapshot listener so new customer orders immediately appear in Admin Panel
+    const unsubscribeFirestoreOrders = storageService.subscribeAdminOrders(
+      (realtimeOrders) => {
+        setOrders(realtimeOrders);
+        setOrdersLoading(false);
+        setOrdersError(null);
+      },
+      (err) => {
+        console.error('Admin orders listener notice:', err);
+        setOrdersError(err.message);
+        setOrdersLoading(false);
+      }
+    );
+
+    return () => {
+      unsubscribeFirestoreOrders();
+    };
+  }, [isAdmin]);
+
   useEffect(() => {
     const unsub = storageService.subscribe(() => {
-      setOrders(storageService.getOrders());
       setProducts(storageService.getProducts());
       setCoupons(storageService.getCoupons());
       setSlides(storageService.getHeroSlides());
@@ -1540,8 +1576,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <option value="paid">Paid</option>
                   <option value="unpaid">Unpaid</option>
                 </select>
+
+                {/* Firestore Sync Refresh Button */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      setOrdersLoading(true);
+                      const fresh = await storageService.fetchAdminOrders();
+                      setOrders(fresh);
+                      onToast(language === 'bn' ? `Firestore থেকে ${fresh.length}টি অর্ডার লোড হয়েছে` : `Loaded ${fresh.length} orders from Firestore`, 'success');
+                    } catch (e: any) {
+                      onToast('Failed to load orders: ' + e?.message, 'error');
+                    } finally {
+                      setOrdersLoading(false);
+                    }
+                  }}
+                  className="p-2 rounded-xl border border-stone-300 hover:bg-stone-50 text-stone-700 transition-colors flex items-center gap-1.5 text-xs font-semibold"
+                  title="Refresh orders directly from Firestore"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${ordersLoading ? 'animate-spin text-amber-700' : ''}`} />
+                  <span className="hidden sm:inline">Firestore Sync</span>
+                </button>
               </div>
             </div>
+
+            {ordersError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>Firestore Orders Warning: {ordersError}</span>
+              </div>
+            )}
 
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">

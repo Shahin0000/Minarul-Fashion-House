@@ -46,6 +46,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // Primary and authorized administrators
 const ADMIN_EMAILS = [
+  'shahinpc2018@gmail.com',
   'bajajmotors.chu@gmail.com',
   'admin@minarulfashion.com',
   'minarul@minarulfashion.com'

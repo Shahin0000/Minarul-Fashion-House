@@ -28,26 +28,47 @@ export const TrackOrderView: React.FC<TrackOrderViewProps> = ({
 }) => {
   const { language, formatPrice, t } = useLanguage();
   const [searchQuery, setSearchQuery] = useState(initialOrderId);
+  const [isSearching, setIsSearching] = useState(false);
   const [foundOrder, setFoundOrder] = useState<Order | null>(() => {
     if (initialOrderId) {
       return storageService.getOrderById(initialOrderId) || null;
     }
-    const allOrders = storageService.getOrders();
-    return allOrders.length > 0 ? allOrders[0] : null;
+    return null;
   });
   const [errorMsg, setErrorMsg] = useState(false);
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const query = searchQuery.trim();
+    if (!query) return;
 
-    const res = storageService.getOrderById(searchQuery.trim());
-    if (res) {
-      setFoundOrder(res);
+    setIsSearching(true);
+    setErrorMsg(false);
+
+    // 1. Check current memory
+    const localMatch = storageService.getOrderById(query);
+    if (localMatch) {
+      setFoundOrder(localMatch);
       setErrorMsg(false);
-    } else {
+      setIsSearching(false);
+      return;
+    }
+
+    // 2. Fetch directly from Firestore by document ID
+    try {
+      const firestoreMatch = await storageService.fetchOrderById(query);
+      if (firestoreMatch) {
+        setFoundOrder(firestoreMatch);
+        setErrorMsg(false);
+      } else {
+        setFoundOrder(null);
+        setErrorMsg(true);
+      }
+    } catch {
       setFoundOrder(null);
       setErrorMsg(true);
+    } finally {
+      setIsSearching(false);
     }
   };
 

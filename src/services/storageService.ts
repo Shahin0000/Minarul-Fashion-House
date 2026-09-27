@@ -7,10 +7,14 @@ import {
   setDoc, 
   deleteDoc, 
   updateDoc, 
+  getDoc,
+  getDocs,
+  query,
+  where,
+  orderBy,
   onSnapshot,
   serverTimestamp
 } from 'firebase/firestore';
-import { withTimeout } from '../utils/authErrors';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const STORAGE_KEYS = {
@@ -24,7 +28,6 @@ const STORAGE_KEYS = {
   SETTINGS: 'mfh_settings_v1',
   HERO_SLIDES: 'mfh_hero_slides_v1',
   USERS: 'mfh_users_v1',
-  PENDING_SYNC_ORDERS: 'mfh_pending_sync_orders_v1',
 };
 
 const defaultSettings: SiteSettings = {
@@ -115,46 +118,7 @@ const initialReviews: Review[] = [
   },
 ];
 
-const initialOrders: Order[] = [
-  {
-    id: 'MFH-88214',
-    customerId: 'cust-demo-1',
-    shippingAddress: {
-      fullName: 'Sabbir Hossain',
-      phone: '01711223344',
-      email: 'sabbir@example.com',
-      division: 'Dhaka',
-      district: 'Dhaka City (ঢাকা সিটি)',
-      address: 'House 42, Road 11, Sector 4, Uttara, Dhaka',
-      notes: 'Please call before delivery',
-    },
-    items: [
-      {
-        productId: 'prod-m-01',
-        titleEn: 'Royal Embroidered Jacquard Panjabi - Maroon',
-        titleBn: 'রয়েল এমব্রয়ডারি জ্যাকার্ড পাঞ্জাবি - মেরুন',
-        image: 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?auto=format&fit=crop&w=800&q=80',
-        size: '42',
-        colorName: 'Royal Maroon',
-        price: 2450,
-        quantity: 1,
-      },
-    ],
-    subtotal: 2450,
-    discount: 245,
-    couponCode: 'MINARUL10',
-    deliveryCharge: 60,
-    totalAmount: 2265,
-    paymentMethod: 'bkash',
-    paymentStatus: 'paid',
-    transactionId: 'BK9X87261M',
-    orderStatus: 'shipped',
-    courierName: 'Steadfast Courier',
-    courierTrackingId: 'STF-BD-998124',
-    createdAt: new Date(Date.now() - 36 * 3600 * 1000).toISOString(),
-    updatedAt: new Date(Date.now() - 12 * 3600 * 1000).toISOString(),
-  },
-];
+const initialOrders: Order[] = [];
 
 class StorageService {
   private listeners: Set<() => void> = new Set();
@@ -163,115 +127,6 @@ class StorageService {
 
   constructor() {
     this.initFirestoreListeners();
-    if (typeof window !== 'undefined') {
-      window.addEventListener('online', () => this.syncPendingOrders());
-      setTimeout(() => this.syncPendingOrders(), 3500);
-    }
-  }
-
-  private queuePendingSyncOrder(orderId: string): void {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.PENDING_SYNC_ORDERS);
-      const list: string[] = raw ? JSON.parse(raw) : [];
-      if (!list.includes(orderId)) {
-        list.push(orderId);
-        localStorage.setItem(STORAGE_KEYS.PENDING_SYNC_ORDERS, JSON.stringify(list));
-      }
-    } catch {
-      // Safe local fallback
-    }
-  }
-
-  private dequeuePendingSyncOrder(orderId: string): void {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.PENDING_SYNC_ORDERS);
-      if (!raw) return;
-      const list: string[] = JSON.parse(raw);
-      const filtered = list.filter((id) => id !== orderId);
-      localStorage.setItem(STORAGE_KEYS.PENDING_SYNC_ORDERS, JSON.stringify(filtered));
-    } catch {
-      // Safe local fallback
-    }
-  }
-
-  async syncPendingOrders(): Promise<void> {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.PENDING_SYNC_ORDERS);
-      if (!raw) return;
-      const list: string[] = JSON.parse(raw);
-      if (!list || list.length === 0) return;
-
-      const orders = this.getOrders();
-      for (const orderId of [...list]) {
-        const order = orders.find((o) => o.id === orderId);
-        if (!order) {
-          this.dequeuePendingSyncOrder(orderId);
-          continue;
-        }
-
-        try {
-          const resolvedCustomerId = auth.currentUser?.uid || (order.customerId && order.customerId !== 'guest' ? order.customerId : 'guest');
-          const customerName = (order.customerName || order.shippingAddress.fullName || '').trim();
-          const customerEmail = (order.customerEmail || order.shippingAddress.email || '').trim();
-          const customerPhone = (order.customerPhone || order.shippingAddress.phone || '').trim();
-          const formattedAddress = `${order.shippingAddress.address}, ${order.shippingAddress.district}, ${order.shippingAddress.division}`;
-
-          const itemsFormatted = (order.items || []).map((it) => ({
-            productId: it.productId || '',
-            productName: it.titleBn || it.titleEn || it.productName || 'Apparel Item',
-            price: Number(it.price) || 0,
-            quantity: Number(it.quantity) || 1,
-            image: it.image || '',
-          }));
-
-          const rawPayload: Record<string, unknown> = {
-            orderId: order.id,
-            customerId: resolvedCustomerId,
-            customerName,
-            customerEmail,
-            customerPhone,
-            items: itemsFormatted,
-            subtotal: Number(order.subtotal) || 0,
-            deliveryCharge: Number(order.deliveryCharge) || 0,
-            totalAmount: Number(order.totalAmount) || 0,
-            paymentMethod: order.paymentMethod,
-            paymentStatus: order.paymentStatus || (order.paymentMethod === 'cod' ? 'unpaid' : 'submitted'),
-            orderStatus: order.orderStatus || 'pending',
-            senderMobile: order.paymentMethod === 'cod' ? '' : (order.senderMobile || ''),
-            transactionId: order.paymentMethod === 'cod' ? '' : (order.transactionId || ''),
-            shippingAddress: {
-              name: customerName,
-              phone: customerPhone,
-              address: formattedAddress,
-            },
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          };
-
-          if (order.couponCode) rawPayload.couponCode = order.couponCode;
-          if (order.courierName) rawPayload.courierName = order.courierName;
-
-          const cleanPayload = JSON.parse(
-            JSON.stringify(rawPayload, (key, value) => (value === undefined ? null : value))
-          );
-          cleanPayload.createdAt = serverTimestamp();
-          cleanPayload.updatedAt = serverTimestamp();
-
-          await withTimeout(
-            setDoc(doc(db, 'orders', order.id), cleanPayload),
-            3000,
-            'Sync timeout'
-          );
-          console.log('✅ Deferred order synced to Firestore:', order.id);
-          this.dequeuePendingSyncOrder(order.id);
-        } catch {
-          // If remote write still unavailable, maintain in sync queue for next reconnection
-          break;
-        }
-      }
-    } catch {
-      // Safe local fallback
-    }
   }
 
   private emitChange() {
@@ -317,18 +172,24 @@ class StorageService {
         if (!snapshot.empty) {
           const list: Order[] = [];
           snapshot.forEach((docSnap) => {
-            list.push({ ...docSnap.data(), id: docSnap.id } as Order);
+            const data = docSnap.data();
+            list.push({
+              ...data,
+              id: docSnap.id,
+              orderId: data.orderId || docSnap.id,
+              createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : (data.createdAt || new Date().toISOString()),
+              updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || new Date().toISOString()),
+            } as Order);
           });
-          // Sort newest first
           list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(list));
           this.emitChange();
         } else {
-          // If empty in Firestore, seed initial order for demonstration
-          this.seedInitialOrders();
+          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify([]));
+          this.emitChange();
         }
       }, (err) => {
-        console.warn('Firestore orders listener:', err.message);
+        console.warn('Firestore orders listener notice:', err.message);
       });
 
       // 3. Sync Settings
@@ -431,16 +292,6 @@ class StorageService {
       }
     } catch (e) {
       console.warn('Could not auto-seed products to Firestore:', e);
-    }
-  }
-
-  private async seedInitialOrders() {
-    try {
-      for (const o of initialOrders) {
-        await setDoc(doc(db, 'orders', o.id), o, { merge: true });
-      }
-    } catch (e) {
-      console.warn('Could not auto-seed orders to Firestore:', e);
     }
   }
 
@@ -617,132 +468,276 @@ class StorageService {
   getOrders(): Order[] {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.ORDERS);
-      if (!data) {
-        localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(initialOrders));
-        return initialOrders;
-      }
+      if (!data) return [];
       return JSON.parse(data);
     } catch {
-      return initialOrders;
+      return [];
     }
   }
 
   getOrderById(id: string): Order | undefined {
     const cleanId = id.trim().toUpperCase();
     return this.getOrders().find(
-      (o) => o.id.toUpperCase() === cleanId || o.shippingAddress.phone.includes(cleanId)
+      (o) => (o.id && o.id.toUpperCase() === cleanId) || 
+             (o.orderId && o.orderId.toUpperCase() === cleanId) || 
+             (o.shippingAddress?.phone && o.shippingAddress.phone.includes(cleanId))
     );
   }
 
-  async saveOrder(order: Order): Promise<void> {
-    const orders = this.getOrders();
-    const existingIndex = orders.findIndex((o) => o.id === order.id);
-    const updatedOrder = { ...order, updatedAt: new Date().toISOString() };
-    if (existingIndex >= 0) {
-      orders[existingIndex] = updatedOrder;
-    } else {
-      orders.unshift(updatedOrder);
+  async fetchOrderById(orderId: string): Promise<Order | null> {
+    try {
+      const cleanId = orderId.trim();
+      const docSnap = await getDoc(doc(db, 'orders', cleanId));
+      if (docSnap.exists()) {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          orderId: d.orderId || docSnap.id,
+          ...d,
+          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
+          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
+        } as Order;
+      }
+      return null;
+    } catch (e: any) {
+      console.error('❌ Error fetching order by ID from Firestore:', e?.code, e?.message);
+      return null;
     }
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-    this.emitChange();
+  }
 
-    // Prepare fields ensuring no undefined values are sent to Firestore
-    const resolvedCustomerId = auth.currentUser?.uid || (order.customerId && order.customerId !== 'guest' ? order.customerId : 'guest');
-    const customerName = (order.customerName || order.shippingAddress.fullName || '').trim();
-    const customerEmail = (order.customerEmail || order.shippingAddress.email || '').trim();
-    const customerPhone = (order.customerPhone || order.shippingAddress.phone || '').trim();
-    const formattedAddress = `${order.shippingAddress.address}, ${order.shippingAddress.district}, ${order.shippingAddress.division}`;
+  async fetchAdminOrders(): Promise<Order[]> {
+    try {
+      const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+      const snapshot = await getDocs(q);
+      const list: Order[] = snapshot.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          orderId: d.orderId || docSnap.id,
+          ...d,
+          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
+          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
+        } as Order;
+      });
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(list));
+      this.emitChange();
+      return list;
+    } catch (e: any) {
+      console.error('❌ Error fetching admin orders from Firestore:', e?.code, e?.message);
+      throw e;
+    }
+  }
+
+  subscribeAdminOrders(callback: (orders: Order[]) => void, onError?: (err: Error) => void): () => void {
+    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snapshot) => {
+      const list: Order[] = snapshot.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          orderId: d.orderId || docSnap.id,
+          ...d,
+          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
+          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
+        } as Order;
+      });
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(list));
+      this.emitChange();
+      callback(list);
+    }, (err) => {
+      console.error('❌ Admin orders Firestore listener error:', err?.message);
+      if (onError) onError(err);
+    });
+  }
+
+  async fetchCustomerOrders(customerId: string): Promise<Order[]> {
+    try {
+      const q = query(collection(db, 'orders'), where('customerId', '==', customerId));
+      const snapshot = await getDocs(q);
+      const list: Order[] = snapshot.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          orderId: d.orderId || docSnap.id,
+          ...d,
+          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
+          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
+        } as Order;
+      });
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return list;
+    } catch (e: any) {
+      console.error('❌ Error fetching customer orders from Firestore:', e?.code, e?.message);
+      throw e;
+    }
+  }
+
+  subscribeCustomerOrders(customerId: string, callback: (orders: Order[]) => void, onError?: (err: Error) => void): () => void {
+    const q = query(collection(db, 'orders'), where('customerId', '==', customerId));
+    return onSnapshot(q, (snapshot) => {
+      const list: Order[] = snapshot.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          orderId: d.orderId || docSnap.id,
+          ...d,
+          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
+          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
+        } as Order;
+      });
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      callback(list);
+    }, (err) => {
+      console.error('❌ Customer orders Firestore listener error:', err?.message);
+      if (onError) onError(err);
+    });
+  }
+
+  async saveOrder(order: Order): Promise<void> {
+    // 5. AUTH USER CHECK
+    const user = auth.currentUser;
+    if (!user) {
+      throw new Error("USER_NOT_AUTHENTICATED");
+    }
+    console.log("AUTH UID:", user.uid);
+
+    const customerName = (order.customerName || order.shippingAddress?.fullName || user.displayName || '').trim();
+    const customerEmail = (order.customerEmail || order.shippingAddress?.email || user.email || '').trim();
+    const customerPhone = (order.customerPhone || order.shippingAddress?.phone || user.phoneNumber || '').trim();
+    const formattedAddress = order.shippingAddress
+      ? `${order.shippingAddress.address || ''}, ${order.shippingAddress.district || ''}, ${order.shippingAddress.division || ''}`.trim()
+      : '';
 
     const itemsFormatted = (order.items || []).map((it) => ({
       productId: it.productId || '',
       productName: it.titleBn || it.titleEn || it.productName || 'Apparel Item',
+      titleEn: it.titleEn || '',
+      titleBn: it.titleBn || '',
       price: Number(it.price) || 0,
       quantity: Number(it.quantity) || 1,
       image: it.image || '',
+      size: it.size || '',
+      colorName: it.colorName || '',
     }));
 
-    // Firestore order document payload strictly matching Problem 2 specification
-    const rawPayload: Record<string, unknown> = {
+    // 6. ORDER DATA
+    const rawOrderData: Record<string, unknown> = {
       orderId: order.id,
-      customerId: resolvedCustomerId,
+      customerId: user.uid,
       customerName,
       customerEmail,
       customerPhone,
+
       items: itemsFormatted,
+
       subtotal: Number(order.subtotal) || 0,
       deliveryCharge: Number(order.deliveryCharge) || 0,
       totalAmount: Number(order.totalAmount) || 0,
+
       paymentMethod: order.paymentMethod,
       paymentStatus: order.paymentStatus || (order.paymentMethod === 'cod' ? 'unpaid' : 'submitted'),
       orderStatus: order.orderStatus || 'pending',
+
       senderMobile: order.paymentMethod === 'cod' ? '' : (order.senderMobile || ''),
       transactionId: order.paymentMethod === 'cod' ? '' : (order.transactionId || ''),
+
       shippingAddress: {
         name: customerName,
         phone: customerPhone,
         address: formattedAddress,
       },
+
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
 
     if (order.couponCode) {
-      rawPayload.couponCode = order.couponCode;
+      rawOrderData.couponCode = order.couponCode;
     }
     if (order.courierName) {
-      rawPayload.courierName = order.courierName;
+      rawOrderData.courierName = order.courierName;
     }
 
     // Defensive check: recursively strip any undefined value before writing to Firestore
-    const cleanFirestorePayload = JSON.parse(
-      JSON.stringify(rawPayload, (key, value) => (value === undefined ? null : value))
+    const orderData = JSON.parse(
+      JSON.stringify(rawOrderData, (key, value) => (value === undefined ? null : value))
     );
-    // Restore serverTimestamp objects
-    cleanFirestorePayload.createdAt = serverTimestamp();
-    cleanFirestorePayload.updatedAt = serverTimestamp();
+    // Restore serverTimestamp instances
+    orderData.createdAt = serverTimestamp();
+    orderData.updatedAt = serverTimestamp();
+
+    console.log("ORDER DATA BEFORE FIRESTORE:", orderData);
 
     try {
-      await withTimeout(
-        setDoc(doc(db, 'orders', order.id), cleanFirestorePayload),
-        2500,
-        'Remote Firestore write timed out'
-      );
-      console.log('✅ Firestore order document created successfully:', order.id);
-      this.dequeuePendingSyncOrder(order.id);
-    } catch (e: unknown) {
-      const errMessage = e instanceof Error ? e.message : String(e);
-      const errCode = (e as { code?: string })?.code || 'offline';
-      console.info(`📦 Order [${order.id}] saved to local storage. Remote Firestore sync deferred (${errCode}: ${errMessage}).`);
-      this.queuePendingSyncOrder(order.id);
+      // 3. FIRESTORE WRITE MUST BE AWAITED (NO FAKE TIMEOUT)
+      await setDoc(doc(db, "orders", order.id), orderData);
+
+      // 4. FIRESTORE WRITE SUCCESS VERIFY
+      console.log("FIRESTORE ORDER SAVE SUCCESS:", order.id);
+
+      // Only update local cache upon verified Firestore success
+      const orders = this.getOrders();
+      const existingIndex = orders.findIndex((o) => o.id === order.id);
+      const updatedOrder: Order = {
+        ...order,
+        orderId: order.id,
+        customerId: user.uid,
+        customerName,
+        customerEmail,
+        customerPhone,
+        updatedAt: new Date().toISOString(),
+      };
+      if (existingIndex >= 0) {
+        orders[existingIndex] = updatedOrder;
+      } else {
+        orders.unshift(updatedOrder);
+      }
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+      this.emitChange();
+    } catch (error: any) {
+      console.error("FIRESTORE ORDER SAVE FAILED:", error);
+      console.error("ERROR CODE:", error?.code);
+      console.error("ERROR MESSAGE:", error?.message);
+      // RE-THROW so caller knows it failed and does NOT show fake success!
+      throw error;
     }
   }
 
   async updateOrder(updatedOrder: Order): Promise<void> {
-    const orders = this.getOrders();
-    const idx = orders.findIndex((o) => o.id === updatedOrder.id);
-    const orderWithDate = { ...updatedOrder, updatedAt: new Date().toISOString() };
-    if (idx >= 0) {
-      orders[idx] = orderWithDate;
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-      this.emitChange();
-    }
-
     try {
-      await setDoc(doc(db, 'orders', updatedOrder.id), orderWithDate);
-    } catch (e) {
-      console.error('Error updating order in Firestore:', e);
+      const payload: Record<string, unknown> = {
+        ...updatedOrder,
+        updatedAt: serverTimestamp(),
+      };
+      const clean = JSON.parse(JSON.stringify(payload, (k, v) => (v === undefined ? null : v)));
+      clean.updatedAt = serverTimestamp();
+      await setDoc(doc(db, 'orders', updatedOrder.id), clean, { merge: true });
+      console.log('✅ Firestore order updated:', updatedOrder.id);
+
+      const orders = this.getOrders();
+      const idx = orders.findIndex((o) => o.id === updatedOrder.id);
+      if (idx >= 0) {
+        orders[idx] = updatedOrder;
+        localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+        this.emitChange();
+      }
+    } catch (e: any) {
+      console.error('❌ Error updating order in Firestore:', e?.code, e?.message);
+      throw e;
     }
   }
 
   async deleteOrder(orderId: string): Promise<void> {
-    const orders = this.getOrders().filter((o) => o.id !== orderId);
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-    this.emitChange();
-
     try {
       await deleteDoc(doc(db, 'orders', orderId));
-    } catch (e) {
-      console.error('Error deleting order from Firestore:', e);
+      console.log('✅ Firestore order deleted:', orderId);
+
+      const orders = this.getOrders().filter((o) => o.id !== orderId);
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+      this.emitChange();
+    } catch (e: any) {
+      console.error('❌ Error deleting order from Firestore:', e?.code, e?.message);
+      throw e;
     }
   }
 
@@ -752,51 +747,51 @@ class StorageService {
     courierTrackingId?: string,
     courierName?: string
   ): Promise<void> {
-    const orders = this.getOrders();
-    const order = orders.find((o) => o.id === orderId);
-    if (order) {
-      order.orderStatus = status;
-      if (courierTrackingId !== undefined) {
-        order.courierTrackingId = courierTrackingId;
-      }
-      if (courierName !== undefined) {
-        order.courierName = courierName;
-      }
-      order.updatedAt = new Date().toISOString();
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-      this.emitChange();
+    try {
+      const updatePayload: Record<string, unknown> = {
+        orderStatus: status,
+        updatedAt: serverTimestamp(),
+      };
+      if (courierTrackingId !== undefined) updatePayload.courierTrackingId = courierTrackingId;
+      if (courierName !== undefined) updatePayload.courierName = courierName;
+      await updateDoc(doc(db, 'orders', orderId), updatePayload);
+      console.log('✅ Firestore orderStatus updated:', orderId, status);
 
-      try {
-        const updatePayload: Record<string, unknown> = {
-          orderStatus: status,
-          updatedAt: order.updatedAt,
-        };
-        if (courierTrackingId !== undefined) updatePayload.courierTrackingId = courierTrackingId;
-        if (courierName !== undefined) updatePayload.courierName = courierName;
-        await updateDoc(doc(db, 'orders', orderId), updatePayload);
-      } catch (e) {
-        console.error('Error updating orderStatus in Firestore:', e);
+      const orders = this.getOrders();
+      const order = orders.find((o) => o.id === orderId);
+      if (order) {
+        order.orderStatus = status;
+        if (courierTrackingId !== undefined) order.courierTrackingId = courierTrackingId;
+        if (courierName !== undefined) order.courierName = courierName;
+        order.updatedAt = new Date().toISOString();
+        localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+        this.emitChange();
       }
+    } catch (e: any) {
+      console.error('❌ Error updating orderStatus in Firestore:', e?.code, e?.message);
+      throw e;
     }
   }
 
   async updatePaymentStatus(orderId: string, status: Order['paymentStatus']): Promise<void> {
-    const orders = this.getOrders();
-    const order = orders.find((o) => o.id === orderId);
-    if (order) {
-      order.paymentStatus = status;
-      order.updatedAt = new Date().toISOString();
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
-      this.emitChange();
+    try {
+      await updateDoc(doc(db, 'orders', orderId), {
+        paymentStatus: status,
+        updatedAt: serverTimestamp(),
+      });
+      console.log('✅ Firestore paymentStatus updated:', orderId, status);
 
-      try {
-        await updateDoc(doc(db, 'orders', orderId), {
-          paymentStatus: status,
-          updatedAt: order.updatedAt,
-        });
-      } catch (e) {
-        console.error('Error updating paymentStatus in Firestore:', e);
+      const orders = this.getOrders();
+      const order = orders.find((o) => o.id === orderId);
+      if (order) {
+        order.paymentStatus = status;
+        order.updatedAt = new Date().toISOString();
+        localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+        this.emitChange();
       }
+    } catch (e: any) {
+      console.error('❌ Error updating paymentStatus in Firestore:', e?.code, e?.message);
+      throw e;
     }
   }
 

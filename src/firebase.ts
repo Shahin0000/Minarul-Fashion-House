@@ -16,6 +16,9 @@ export const firebaseConfig = {
 // Initialize Firebase App
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
+// Verify Firebase Project ID per requirement 11
+console.log("Firebase Project ID:", app.options.projectId);
+
 // Firebase Services
 export const auth = getAuth(app);
 export const db = getFirestore(app);

@@ -16,6 +16,7 @@ service cloud.firestore {
     // 2. OR user document has role == 'admin'
     function isAdmin() {
       return isSignedIn() && (
+        request.auth.token.email == 'shahinpc2018@gmail.com' ||
         request.auth.token.email == 'bajajmotors.chu@gmail.com' ||
         request.auth.token.email == 'admin@minarulfashion.com' ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -66,12 +67,17 @@ service cloud.firestore {
     }
 
     // ----------------- ORDERS COLLECTION -----------------
-    // Customer can create an order and read their own orders; Admin can manage all
+    // Customer can create order and read their own orders; Admin can read and manage all
     match /orders/{orderId} {
-      allow create: if true;
-      allow get: if (isSignedIn() && (resource.data.customerId == request.auth.uid || isAdmin())) ||
-                    (!isSignedIn() && resource != null);
-      allow list: if isSignedIn() && (resource.data.customerId == request.auth.uid || isAdmin());
+      allow read: if isAdmin()
+                  || (
+                    isSignedIn()
+                    && resource.data.customerId == request.auth.uid
+                  );
+
+      allow create: if isSignedIn()
+                    && request.resource.data.customerId == request.auth.uid;
+
       allow update, delete: if isAdmin();
     }
 
