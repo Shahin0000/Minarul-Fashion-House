@@ -51,6 +51,7 @@ import {
   User
 } from '../../types';
 import { formatAuthError } from '../../utils/authErrors';
+import { app } from '../../firebase';
 
 interface AdminDashboardProps {
   onViewInvoice: (order: Order) => void;
@@ -2211,7 +2212,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
               <div className="space-y-0.5">
                 <span className="text-[10px] uppercase tracking-wider font-bold text-stone-400">Firebase Backend Project</span>
-                <p className="font-mono font-bold text-stone-900">minarul-fashion-house (Live)</p>
+                <p className="font-mono font-bold text-stone-900">{app.options.projectId || 'minarul-fashion-house-f5101'} (Live)</p>
                 <p className="text-stone-500 text-[11px]">Firestore Database • Firebase Auth • Cloud Storage Active</p>
               </div>
               <div className="flex items-center gap-2">
