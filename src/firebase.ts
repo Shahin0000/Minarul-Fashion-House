@@ -4,13 +4,13 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyCX2LGzRdCSlzjfp1YVxN8NVk7yXv9U6oY",
-  authDomain: "minarul-fashion-house.firebaseapp.com",
-  projectId: "minarul-fashion-house",
-  storageBucket: "minarul-fashion-house.firebasestorage.app",
-  messagingSenderId: "722456007579",
-  appId: "1:722456007579:web:729430ed144486efb0c73e",
-  measurementId: "G-WNE2K8KHCJ"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyCX2LGzRdCSlzjfp1YVxN8NVk7yXv9U6oY",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "minarul-fashion-house.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "minarul-fashion-house",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "minarul-fashion-house.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "722456007579",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:722456007579:web:729430ed144486efb0c73e",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-WNE2K8KHCJ"
 };
 
 // Initialize Firebase App
