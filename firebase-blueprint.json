@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access control",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string", "description": "Full name of the user", "maxLength": 100 },
+        "email": { "type": "string", "description": "Email address" },
+        "phone": { "type": "string", "description": "Bangladeshi contact phone number", "maxLength": 20 },
+        "role": { "type": "string", "enum": ["customer", "admin"], "description": "User authorization role" },
+        "address": { "type": "object", "description": "Default shipping address" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last update timestamp" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Clothing apparel product in the fashion catalog",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique product ID" },
+        "titleEn": { "type": "string", "description": "English product title", "maxLength": 150 },
+        "titleBn": { "type": "string", "description": "Bangla product title", "maxLength": 150 },
+        "category": { "type": "string", "enum": ["men", "women", "children", "festive"] },
+        "subCategory": { "type": "string" },
+        "price": { "type": "number", "description": "Selling price in BDT" },
+        "originalPrice": { "type": "number" },
+        "images": { "type": "array", "description": "Product image URLs" },
+        "descriptionEn": { "type": "string" },
+        "descriptionBn": { "type": "string" },
+        "sizes": { "type": "array" },
+        "colors": { "type": "array" },
+        "stock": { "type": "number", "description": "Inventory stock count" },
+        "isFeatured": { "type": "boolean" },
+        "isNewArrival": { "type": "boolean" },
+        "isBestSeller": { "type": "boolean" },
+        "rating": { "type": "number" },
+        "reviewCount": { "type": "number" },
+        "fabric": { "type": "string" },
+        "sku": { "type": "string" },
+        "tags": { "type": "array" }
+      },
+      "required": ["id", "titleEn", "price", "stock", "category"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer purchase order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Order identifier" },
+        "orderId": { "type": "string", "description": "Unique order tracking ID" },
+        "customerId": { "type": "string", "description": "Auth UID or customer identifier" },
+        "customerName": { "type": "string", "description": "Recipient customer name" },
+        "customerEmail": { "type": "string", "description": "Customer email address" },
+        "customerPhone": { "type": "string", "description": "Contact phone number" },
+        "shippingAddress": { "type": "object", "description": "Delivery address and recipient details" },
+        "items": { "type": "array", "description": "Order item details" },
+        "subtotal": { "type": "number" },
+        "deliveryCharge": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["cod", "bkash", "nagad", "rocket"] },
+        "paymentStatus": { "type": "string", "enum": ["unpaid", "paid", "submitted", "pending"] },
+        "senderMobile": { "type": "string", "description": "Sender mobile number for mobile banking" },
+        "transactionId": { "type": "string", "description": "Transaction ID from SMS" },
+        "orderStatus": { "type": "string", "enum": ["pending", "confirmed", "packaging", "shipped", "delivered", "cancelled"] },
+        "couponCode": { "type": "string" },
+        "courierName": { "type": "string" },
+        "courierTrackingId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["orderId", "shippingAddress", "items", "totalAmount", "paymentMethod", "orderStatus"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "Discount vouchers and promotional codes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "discountType": { "type": "string", "enum": ["percentage", "fixed"] },
+        "discountValue": { "type": "number" },
+        "minOrderValue": { "type": "number" },
+        "descriptionEn": { "type": "string" },
+        "descriptionBn": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "discountType", "discountValue", "isActive"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Verified customer feedback and product rating",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhoneMasked": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "date": { "type": "string" },
+        "verifiedPurchase": { "type": "boolean" }
+      },
+      "required": ["productId", "userName", "rating", "comment"]
+    },
+    "SiteSettings": {
+      "title": "SiteSettings",
+      "description": "Global website configuration, delivery rates and merchant numbers",
+      "type": "object",
+      "properties": {
+        "announcementEn": { "type": "string" },
+        "announcementBn": { "type": "string" },
+        "hotline": { "type": "string" },
+        "whatsapp": { "type": "string" },
+        "supportEmail": { "type": "string" },
+        "bkashMerchantNumber": { "type": "string" },
+        "nagadMerchantNumber": { "type": "string" },
+        "rocketMerchantNumber": { "type": "string" },
+        "dhakaDeliveryFee": { "type": "number" },
+        "outsideDhakaDeliveryFee": { "type": "number" },
+        "freeShippingThreshold": { "type": "number" },
+        "flagshipAddressEn": { "type": "string" },
+        "flagshipAddressBn": { "type": "string" }
+      }
+    },
+    "HeroSlide": {
+      "title": "HeroSlide",
+      "description": "Homepage carousel banner slides",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "badgeEn": { "type": "string" },
+        "badgeBn": { "type": "string" },
+        "titleEn": { "type": "string" },
+        "titleBn": { "type": "string" },
+        "subtitleEn": { "type": "string" },
+        "subtitleBn": { "type": "string" },
+        "image": { "type": "string" },
+        "category": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "titleEn", "image", "isActive"]
+    },
+    "PhoneLookup": {
+      "title": "PhoneLookup",
+      "description": "Maps normalized Bangladeshi mobile numbers to Firebase Auth credentials for mobile login",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "phone"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Registered customer and admin profiles"
+    },
+    "/phoneLookup/{phone}": {
+      "schema": "PhoneLookup",
+      "description": "Index for mobile number based login"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Catalog of fashion items and apparel"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer purchase orders and fulfillment tracking"
+    },
+    "/coupons/{couponId}": {
+      "schema": "Coupon",
+      "description": "Promotional coupon codes"
+    },
+    "/reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Product customer reviews"
+    },
+    "/settings/{settingId}": {
+      "schema": "SiteSettings",
+      "description": "Website global configuration and store settings"
+    },
+    "/heroSlides/{slideId}": {
+      "schema": "HeroSlide",
+      "description": "Homepage dynamic promotional banners"
+    }
+  }
+}

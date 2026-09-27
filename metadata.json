@@ -1,0 +1,6 @@
+{
+  "name": "Minarul Fashion House",
+  "description": "Premium clothing and dress collection for Men, Women, and Children in Bangladesh with bilingual Bangla/English support, fast delivery, and authentic styles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
