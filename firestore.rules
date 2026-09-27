@@ -12,16 +12,11 @@ service cloud.firestore {
     }
 
     // Admin authorization check:
-    // 1. Matches runtime admin email (e.g. bajajmotors.chu@gmail.com, admin@minarulfashion.com)
-    // 2. OR user document has role == 'admin'
+    // Strictly determined from Firestore users/{uid}.role == 'admin'
     function isAdmin() {
-      return isSignedIn() && (
-        request.auth.token.email == 'shahinpc2018@gmail.com' ||
-        request.auth.token.email == 'bajajmotors.chu@gmail.com' ||
-        request.auth.token.email == 'admin@minarulfashion.com' ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
-      );
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
     }
 
     // Default deny catch-all
@@ -36,12 +31,11 @@ service cloud.firestore {
       allow list: if isAdmin();
 
       // Creation: customer can create their own profile with role == 'customer'
-      // Customer cannot self-assign role == 'admin' unless verified runtime admin email
+      // Customer cannot self-assign role == 'admin'
       allow create: if isSignedIn() && (
         (isOwner(userId) && (
           !('role' in request.resource.data) || 
-          request.resource.data.role == 'customer' ||
-          (request.auth.token.email == 'bajajmotors.chu@gmail.com' && request.resource.data.role == 'admin')
+          request.resource.data.role == 'customer'
         )) ||
         isAdmin()
       );

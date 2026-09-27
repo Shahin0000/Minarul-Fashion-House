@@ -136,3 +136,78 @@ export function calculateDeliveryFee(districtId: string): number {
   }
   return 120;
 }
+
+export interface FlatDistrict {
+  id: string;
+  nameEn: string;
+  nameBn: string;
+  cleanNameEn: string;
+  cleanNameBn: string;
+  divisionId: string;
+  divisionNameBn: string;
+  divisionNameEn: string;
+}
+
+export const allBangladeshDistricts: FlatDistrict[] = bangladeshDivisions.flatMap((div) =>
+  div.districts.map((d) => {
+    // e.g. "Khulna City (খুলনা সিটি)" -> "Khulna City" & "Khulna"
+    const englishMain = d.nameEn.split('(')[0].trim().replace(/\s+City$/i, '');
+    const bengaliMain = d.nameBn.replace(/\s+সিটি$/, '').trim();
+    return {
+      id: d.id,
+      nameEn: d.nameEn,
+      nameBn: d.nameBn,
+      cleanNameEn: englishMain || d.nameEn,
+      cleanNameBn: bengaliMain || d.nameBn,
+      divisionId: div.id,
+      divisionNameBn: div.nameBn,
+      divisionNameEn: div.nameEn,
+    };
+  })
+);
+
+/**
+ * Normalizes any raw district input (English or Bengali, case-insensitive, with/without punctuation or City suffix)
+ * to match exact district entry or canonical name.
+ */
+export function normalizeDistrictName(raw?: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+
+  const lower = trimmed.toLowerCase();
+  const cleanKey = lower.replace(/[-_.,() ]/g, '');
+
+  // 1. Direct match with id, nameBn, or cleanNameBn
+  for (const d of allBangladeshDistricts) {
+    if (d.nameBn === trimmed || d.cleanNameBn === trimmed || d.id === lower) {
+      return d.cleanNameBn;
+    }
+  }
+
+  // 2. Exact match with cleanNameEn or cleanKey
+  for (const d of allBangladeshDistricts) {
+    if (d.cleanNameEn.toLowerCase() === lower || d.nameEn.toLowerCase() === lower) {
+      return d.cleanNameBn;
+    }
+    const dIdClean = d.id.replace(/[-_.,() ]/g, '').toLowerCase();
+    const dEnClean = d.cleanNameEn.replace(/[-_.,() ]/g, '').toLowerCase();
+    if (cleanKey === dIdClean || cleanKey === dEnClean) {
+      return d.cleanNameBn;
+    }
+  }
+
+  // 3. Substring matching (e.g. "khulna" in "Khulna City" or "খুলনা" in "খুলনা সিটি")
+  for (const d of allBangladeshDistricts) {
+    const dEnClean = d.cleanNameEn.toLowerCase();
+    if (dEnClean.includes(lower) || lower.includes(dEnClean)) {
+      return d.cleanNameBn;
+    }
+    if (d.nameBn.includes(trimmed) || trimmed.includes(d.nameBn) || d.cleanNameBn.includes(trimmed)) {
+      return d.cleanNameBn;
+    }
+  }
+
+  return trimmed;
+}
+

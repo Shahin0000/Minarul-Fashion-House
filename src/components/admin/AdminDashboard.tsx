@@ -51,7 +51,9 @@ import {
   User
 } from '../../types';
 import { formatAuthError } from '../../utils/authErrors';
-import { app } from '../../firebase';
+import { app, db } from '../../firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { bangladeshDivisions, allBangladeshDistricts, normalizeDistrictName, FlatDistrict } from '../../data/bangladeshLocations';
 
 interface AdminDashboardProps {
   onViewInvoice: (order: Order) => void;
@@ -357,12 +359,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Edit Order Form fields
   const [orderCustomerName, setOrderCustomerName] = useState('');
   const [orderPhone, setOrderPhone] = useState('');
+  const [orderCustomerEmail, setOrderCustomerEmail] = useState('');
   const [orderAddress, setOrderAddress] = useState('');
   const [orderDistrict, setOrderDistrict] = useState('');
   const [orderCourierName, setOrderCourierName] = useState('');
   const [orderTrackingId, setOrderTrackingId] = useState('');
   const [orderNotes, setOrderNotes] = useState('');
   const [orderDeliveryFee, setOrderDeliveryFee] = useState(60);
+  const [isLoadingCustomerProfile, setIsLoadingCustomerProfile] = useState(false);
 
   // Filtered Orders
   const filteredOrders = useMemo(() => {
@@ -384,19 +388,133 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [orders, orderSearch, orderStatusFilter, orderPaymentFilter]);
 
-  const openEditOrderModal = (order: Order) => {
+  const openEditOrderModal = async (order: Order) => {
     setEditingOrder(order);
-    setOrderCustomerName(order.shippingAddress.fullName);
-    setOrderPhone(order.shippingAddress.phone);
-    setOrderAddress(order.shippingAddress.address);
-    setOrderDistrict(order.shippingAddress.district);
+    setIsLoadingCustomerProfile(true);
+
+    // Initial fallback population from order snapshot
+    const initialName = (
+      order.shippingAddress?.fullName ||
+      (order.shippingAddress as any)?.name ||
+      order.customerName ||
+      ''
+    ).trim();
+    const initialPhone = (
+      order.shippingAddress?.phone ||
+      order.customerPhone ||
+      ''
+    ).trim();
+    const initialEmail = (
+      order.customerEmail ||
+      order.shippingAddress?.email ||
+      ''
+    ).trim();
+    const initialDistrict = (
+      order.shippingAddress?.district ||
+      (order as any).deliveryAddress?.district ||
+      (order as any).district ||
+      ''
+    ).trim();
+    const initialAddress = (
+      order.shippingAddress?.address ||
+      (order as any).deliveryAddress?.address ||
+      ''
+    ).trim();
+
+    setOrderCustomerName(initialName);
+    setOrderPhone(initialPhone);
+    setOrderCustomerEmail(initialEmail);
+    setOrderDistrict(initialDistrict);
+    setOrderAddress(initialAddress);
     setOrderCourierName(order.courierName || 'Steadfast Courier');
     setOrderTrackingId(order.courierTrackingId || '');
-    setOrderNotes(order.shippingAddress.notes || '');
-    setOrderDeliveryFee(order.deliveryCharge);
+    setOrderNotes(order.shippingAddress?.notes || '');
+    setOrderDeliveryFee(order.deliveryCharge || 60);
+
+    // Asynchronously fetch live order and users/{customerId} from Firestore
+    try {
+      let liveOrder = order;
+      try {
+        const orderRef = doc(db, 'orders', order.id);
+        const orderSnap = await getDoc(orderRef);
+        if (orderSnap.exists()) {
+          liveOrder = storageService.mapFirestoreOrder(orderSnap.id, orderSnap.data());
+        }
+      } catch (orderErr: any) {
+        console.warn('Order document live read notice:', orderErr?.message);
+      }
+
+      const customerId = liveOrder.customerId || order.customerId;
+      if (!customerId || !customerId.trim()) {
+        console.error("Order customerId is missing");
+        setIsLoadingCustomerProfile(false);
+        return;
+      }
+
+      const userRef = doc(db, 'users', customerId.trim());
+      const userSnap = await getDoc(userRef);
+
+      if (!userSnap.exists()) {
+        console.warn("Customer profile not found:", customerId);
+      } else {
+        const userData = userSnap.data();
+        const uName = (userData.name || userData.displayName || '').trim();
+        const uPhone = (userData.phone || userData.phoneNumber || (typeof userData.address === 'object' ? userData.address?.phone : '') || '').trim();
+        const uEmail = (userData.email || (typeof userData.address === 'object' ? userData.address?.email : '') || '').trim();
+        const uDistrict = (userData.district || (typeof userData.address === 'object' ? userData.address?.district : '') || '').trim();
+        const uAddress = (typeof userData.address === 'string' ? userData.address : (userData.address?.address || '')).trim();
+
+        // 1. Customer Name (Order delivery name takes priority if not empty or generic 'Customer')
+        const orderNameVal = (liveOrder.shippingAddress?.fullName || (liveOrder.shippingAddress as any)?.name || liveOrder.customerName || '').trim();
+        const resolvedName = (orderNameVal && orderNameVal.toLowerCase() !== 'customer') ? orderNameVal : (uName || orderNameVal || '');
+
+        // 2. District Priority:
+        // Priority 1: order.shippingAddress.district
+        // Priority 2: order.deliveryAddress.district
+        // Priority 3: userProfile.district
+        const orderDistVal = (
+          liveOrder.shippingAddress?.district ||
+          (liveOrder as any).deliveryAddress?.district ||
+          (liveOrder as any).district ||
+          ''
+        ).trim();
+        const chosenDist = orderDistVal || uDistrict || '';
+        const resolvedDistrict = chosenDist || '';
+
+        // 3. Mobile Number Priority:
+        // Priority 1: order.shippingAddress.phone
+        // Priority 2: order.customerPhone
+        // Priority 3: userProfile.phone
+        const orderPhoneVal = (liveOrder.shippingAddress?.phone || liveOrder.customerPhone || '').trim();
+        const resolvedPhone = orderPhoneVal || uPhone || '';
+
+        // 4. Email Priority:
+        // Priority 1: order.customerEmail || order.shippingAddress.email
+        // Priority 2: userProfile.email
+        const orderEmailVal = (liveOrder.customerEmail || liveOrder.shippingAddress?.email || '').trim();
+        const resolvedEmail = orderEmailVal || uEmail || '';
+
+        // 5. Address Priority:
+        // Priority 1: order.shippingAddress.address
+        // Priority 2: order.deliveryAddress.address
+        // Priority 3: userProfile.address
+        const orderAddrVal = (liveOrder.shippingAddress?.address || (liveOrder as any).deliveryAddress?.address || '').trim();
+        const resolvedAddress = orderAddrVal || uAddress || '';
+
+        setOrderCustomerName(resolvedName);
+        setOrderPhone(resolvedPhone);
+        setOrderCustomerEmail(resolvedEmail);
+        setOrderDistrict(resolvedDistrict);
+        setOrderAddress(resolvedAddress);
+      }
+    } catch (error: any) {
+      console.error("ORDER CUSTOMER FETCH ERROR:", error?.code, error?.message);
+    } finally {
+      setIsLoadingCustomerProfile(false);
+    }
   };
 
-  const handleSaveOrderEdit = (e: React.FormEvent) => {
+  const handleSaveOrderEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOrder) return;
 
@@ -409,10 +527,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       totalAmount: newTotal,
       courierName: orderCourierName.trim(),
       courierTrackingId: orderTrackingId.trim() || undefined,
+      customerName: orderCustomerName.trim(),
+      customerPhone: orderPhone.trim(),
+      customerEmail: orderCustomerEmail.trim(),
       shippingAddress: {
         ...editingOrder.shippingAddress,
         fullName: orderCustomerName.trim(),
+        name: orderCustomerName.trim(),
         phone: orderPhone.trim(),
+        email: orderCustomerEmail.trim() || undefined,
         address: orderAddress.trim(),
         district: orderDistrict.trim(),
         notes: orderNotes.trim() || undefined,
@@ -420,12 +543,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       updatedAt: new Date().toISOString(),
     };
 
-    storageService.updateOrder(updated);
-    setEditingOrder(null);
-    onToast(
-      language === 'bn' ? `অর্ডার #${updated.id} এর তথ্য সংরক্ষিত হয়েছে!` : `Order #${updated.id} updated!`,
-      'success'
-    );
+    try {
+      await storageService.updateOrder(updated);
+      setEditingOrder(null);
+      onToast(
+        language === 'bn' ? `অর্ডার #${updated.id} এর তথ্য সংরক্ষিত হয়েছে!` : `Order #${updated.id} updated!`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error("ORDER UPDATE ERROR:", err);
+      console.error("ERROR CODE:", err?.code);
+      console.error("ERROR MESSAGE:", err?.message);
+      onToast(`Order update failed: ${err?.message || err?.code || 'Permission denied'}`, 'error');
+    }
   };
 
   const handleDeleteOrderClick = (order: Order) => {
@@ -434,12 +564,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       language === 'bn'
         ? `আপনি কি নিশ্চিত #${order.id} অর্ডারটি সম্পূর্ণ মুছে ফেলতে চান? গ্রাহক: ${order.shippingAddress.fullName}`
         : `Are you sure you want to permanently delete order #${order.id} for ${order.shippingAddress.fullName}?`,
-      () => {
-        storageService.deleteOrder(order.id);
-        onToast(
-          language === 'bn' ? `অর্ডার #${order.id} মুছে ফেলা হয়েছে` : `Order #${order.id} deleted`,
-          'info'
-        );
+      async () => {
+        try {
+          await storageService.deleteOrder(order.id);
+          onToast(
+            language === 'bn' ? `অর্ডার #${order.id} মুছে ফেলা হয়েছে` : `Order #${order.id} deleted`,
+            'info'
+          );
+        } catch (err: any) {
+          console.error("ORDER UPDATE ERROR:", err);
+          console.error("ERROR CODE:", err?.code);
+          console.error("ERROR MESSAGE:", err?.message);
+          onToast(`Delete failed: ${err?.message || err?.code || 'Permission denied'}`, 'error');
+        }
       }
     );
   };
@@ -1691,10 +1828,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             {ord.paymentMethod}
                           </span>
                           <button
-                            onClick={() => {
+                            onClick={async () => {
                               const newStatus: PaymentStatus = ord.paymentStatus === 'paid' ? 'unpaid' : 'paid';
-                              storageService.updatePaymentStatus(ord.id, newStatus);
-                              onToast(`Order #${ord.id} marked as ${newStatus.toUpperCase()}`, 'success');
+                              try {
+                                await storageService.updatePaymentStatus(ord.id, newStatus);
+                                onToast(`Order #${ord.id} marked as ${newStatus.toUpperCase()}`, 'success');
+                              } catch (err: any) {
+                                console.error("ORDER UPDATE ERROR:", err);
+                                console.error("ERROR CODE:", err?.code);
+                                console.error("ERROR MESSAGE:", err?.message);
+                                onToast(`Payment update failed: ${err?.message || err?.code || 'Permission denied'}`, 'error');
+                              }
                             }}
                             className={`text-[10px] px-2 py-0.5 rounded font-bold transition-all shadow-2xs ${
                               ord.paymentStatus === 'paid'
@@ -1708,33 +1852,69 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </td>
 
                         <td className="py-3">
-                          <select
-                            value={ord.orderStatus}
-                            onChange={(e) => {
-                              storageService.updateOrderStatus(ord.id, e.target.value as OrderStatus);
-                              onToast(`Order #${ord.id} status changed to ${e.target.value}`, 'success');
-                            }}
-                            className={`text-xs font-bold border rounded-lg px-2 py-1 outline-none cursor-pointer ${
-                              ord.orderStatus === 'delivered'
-                                ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
-                                : ord.orderStatus === 'shipped'
-                                ? 'bg-blue-50 border-blue-300 text-blue-900'
-                                : ord.orderStatus === 'packaging'
-                                ? 'bg-purple-50 border-purple-300 text-purple-900'
-                                : ord.orderStatus === 'confirmed'
-                                ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
-                                : ord.orderStatus === 'cancelled'
-                                ? 'bg-rose-50 border-rose-300 text-rose-900'
-                                : 'bg-amber-50 border-amber-300 text-amber-900'
-                            }`}
-                          >
-                            <option value="pending">Pending</option>
-                            <option value="confirmed">Confirmed</option>
-                            <option value="packaging">Packaging</option>
-                            <option value="shipped">Shipped</option>
-                            <option value="delivered">Delivered</option>
-                            <option value="cancelled">Cancelled</option>
-                          </select>
+                          <div className="flex items-center gap-1.5">
+                            {ord.orderStatus === 'pending' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await storageService.updateOrderStatus(ord.id, 'confirmed');
+                                    onToast(
+                                      language === 'bn'
+                                        ? `অর্ডার #${ord.id} সফলভাবে কনফার্ম করা হয়েছে!`
+                                        : `Order #${ord.id} confirmed successfully!`,
+                                      'success'
+                                    );
+                                  } catch (err: any) {
+                                    console.error("ORDER UPDATE ERROR:", err);
+                                    console.error("ERROR CODE:", err?.code);
+                                    console.error("ERROR MESSAGE:", err?.message);
+                                    onToast(`Order confirmation failed: ${err?.message || err?.code || 'Permission denied'}`, 'error');
+                                  }
+                                }}
+                                className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] flex items-center gap-1 shadow-2xs transition-colors shrink-0"
+                                title="Confirm this customer order"
+                              >
+                                <Check className="w-3 h-3" />
+                                <span>{language === 'bn' ? 'কনফার্ম' : 'Confirm'}</span>
+                              </button>
+                            )}
+                            <select
+                              value={ord.orderStatus}
+                              onChange={async (e) => {
+                                const newStatus = e.target.value as OrderStatus;
+                                try {
+                                  await storageService.updateOrderStatus(ord.id, newStatus);
+                                  onToast(`Order #${ord.id} status changed to ${newStatus}`, 'success');
+                                } catch (err: any) {
+                                  console.error("ORDER UPDATE ERROR:", err);
+                                  console.error("ERROR CODE:", err?.code);
+                                  console.error("ERROR MESSAGE:", err?.message);
+                                  onToast(`Order update failed: ${err?.message || err?.code || 'Permission denied'}`, 'error');
+                                }
+                              }}
+                              className={`text-xs font-bold border rounded-lg px-2 py-1 outline-none cursor-pointer ${
+                                ord.orderStatus === 'delivered'
+                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                                  : ord.orderStatus === 'shipped'
+                                  ? 'bg-blue-50 border-blue-300 text-blue-900'
+                                  : ord.orderStatus === 'packaging'
+                                  ? 'bg-purple-50 border-purple-300 text-purple-900'
+                                  : ord.orderStatus === 'confirmed'
+                                  ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
+                                  : ord.orderStatus === 'cancelled'
+                                  ? 'bg-rose-50 border-rose-300 text-rose-900'
+                                  : 'bg-amber-50 border-amber-300 text-amber-900'
+                              }`}
+                            >
+                              <option value="pending">Pending</option>
+                              <option value="confirmed">Confirmed</option>
+                              <option value="packaging">Packaging</option>
+                              <option value="shipped">Shipped</option>
+                              <option value="delivered">Delivered</option>
+                              <option value="cancelled">Cancelled</option>
+                            </select>
+                          </div>
                         </td>
 
                         <td className="py-3 text-right">
@@ -2414,6 +2594,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
 
             <form onSubmit={handleSaveOrderEdit} className="p-6 space-y-4 text-xs">
+              {isLoadingCustomerProfile && (
+                <div className="flex items-center gap-2 p-2.5 bg-amber-50 text-amber-900 rounded-xl text-xs font-semibold animate-pulse border border-amber-200/80">
+                  <Clock className="w-4 h-4 animate-spin text-amber-700" />
+                  <span>Loading customer information... (গ্রাহকের তথ্য লোড হচ্ছে...)</span>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block font-bold text-stone-700 mb-1">Customer Full Name *</label>
@@ -2438,14 +2625,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
 
                 <div>
-                  <label className="block font-bold text-stone-700 mb-1">District (জেলা) *</label>
+                  <label className="block font-bold text-stone-700 mb-1">Email (ইমেইল)</label>
                   <input
-                    type="text"
+                    type="email"
+                    value={orderCustomerEmail}
+                    onChange={(e) => setOrderCustomerEmail(e.target.value)}
+                    placeholder="customer@example.com"
+                    className="w-full px-3 py-2 border rounded-xl border-stone-300"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-stone-700 mb-1">District (জেলা) *</label>
+                  <select
                     required
                     value={orderDistrict}
                     onChange={(e) => setOrderDistrict(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-xl border-stone-300"
-                  />
+                    className="w-full px-3 py-2 border rounded-xl border-stone-300 bg-white"
+                  >
+                    <option value="">-- জেলা নির্বাচন করুন (Select District) --</option>
+                    {orderDistrict &&
+                      !bangladeshDivisions.some((div) =>
+                        div.districts.some(
+                          (d) =>
+                            d.nameBn === orderDistrict ||
+                            d.nameBn.replace(/\s+সিটি$/, '').trim() === orderDistrict ||
+                            d.nameEn.split('(')[0].trim().replace(/\s+City$/i, '').toLowerCase() === orderDistrict.toLowerCase()
+                        )
+                      ) && <option value={orderDistrict}>{orderDistrict}</option>}
+                    {bangladeshDivisions.map((div) => (
+                      <optgroup key={div.id} label={`${div.nameEn} (${div.nameBn})`}>
+                        {div.districts.map((d) => {
+                          const cleanBn = d.nameBn.replace(/\s+সিটি$/, '').trim();
+                          const cleanEn = d.nameEn.split('(')[0].trim().replace(/\s+City$/i, '');
+                          const optionValue =
+                            orderDistrict && orderDistrict.toLowerCase() === cleanEn.toLowerCase()
+                              ? orderDistrict
+                              : orderDistrict && orderDistrict === cleanBn
+                              ? cleanBn
+                              : cleanBn;
+                          return (
+                            <option key={d.id} value={optionValue}>
+                              {cleanBn} ({cleanEn})
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    ))}
+                  </select>
                 </div>
 
                 <div>

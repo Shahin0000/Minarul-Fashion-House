@@ -44,16 +44,23 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Primary and authorized administrators
-const ADMIN_EMAILS = [
-  'shahinpc2018@gmail.com',
-  'bajajmotors.chu@gmail.com',
-  'admin@minarulfashion.com',
-  'minarul@minarulfashion.com'
-];
+// Clean up any legacy or rogue cached admin flags
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('admin');
+    localStorage.removeItem('isAdmin');
+    localStorage.removeItem('userRole');
+    sessionStorage.removeItem('admin');
+    sessionStorage.removeItem('isAdmin');
+    sessionStorage.removeItem('userRole');
+  } catch {
+    // Safe storage access
+  }
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(() => storageService.getUser());
+  // Never initialize user from cached storage to prevent stale admin role
+  const [user, setUser] = useState<User | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -72,51 +79,78 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (currentFbUser) {
-        const isAdminByEmail = Boolean(
-          currentFbUser.email && ADMIN_EMAILS.includes(currentFbUser.email.toLowerCase())
-        );
+        setIsLoadingAuth(true);
 
-        // Optimistically set user from storage or auth credentials so the app never hangs
-        const cachedUser = storageService.getUser();
-        if (cachedUser && cachedUser.id === currentFbUser.uid) {
-          setUser(cachedUser);
-        } else {
-          const quickUser: User = {
+        try {
+          // Read users/{uid} document strictly from Firestore
+          const userDocRef = doc(db, 'users', currentFbUser.uid);
+          const userSnap = await getDoc(userDocRef);
+
+          let userRole: 'customer' | 'admin' = 'customer';
+          let userName = currentFbUser.displayName || 'Customer';
+          let userPhone = currentFbUser.phoneNumber || '';
+          let userAddress = undefined;
+
+          if (userSnap.exists()) {
+            const data = userSnap.data();
+            // Source of Truth: ONLY data.role === 'admin'
+            userRole = data.role === 'admin' ? 'admin' : 'customer';
+            userName = data.name || currentFbUser.displayName || 'Customer';
+            userPhone = data.phone || currentFbUser.phoneNumber || '';
+            userAddress = data.address;
+          } else {
+            // Profile document does not exist yet; default strictly to 'customer'
+            userRole = 'customer';
+          }
+
+          const verifiedUser: User = {
+            id: currentFbUser.uid,
+            name: userName,
+            email: currentFbUser.email || '',
+            phone: userPhone,
+            role: userRole,
+            address: userAddress,
+          };
+
+          setUser(verifiedUser);
+          storageService.saveUser(verifiedUser);
+
+          // Real-time listener on user's Firestore document
+          unsubscribeUserDoc = onSnapshot(userDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+              const liveData = docSnap.data();
+              const liveRole: 'customer' | 'admin' = liveData.role === 'admin' ? 'admin' : 'customer';
+
+              setUser((prev) => {
+                if (!prev) return null;
+                const updated: User = {
+                  ...prev,
+                  role: liveRole,
+                  name: liveData.name || prev.name,
+                  phone: liveData.phone || prev.phone,
+                  address: liveData.address || prev.address,
+                };
+                storageService.saveUser(updated);
+                return updated;
+              });
+            }
+          }, (error) => {
+            console.warn('Real-time user document listener notice:', error.message);
+          });
+        } catch (error: any) {
+          console.error('Error fetching user role from Firestore:', error?.code, error?.message);
+          const fallbackUser: User = {
             id: currentFbUser.uid,
             name: currentFbUser.displayName || 'Customer',
             email: currentFbUser.email || '',
             phone: currentFbUser.phoneNumber || '',
-            role: isAdminByEmail ? 'admin' : 'customer',
+            role: 'customer',
           };
-          setUser(quickUser);
-          storageService.saveUser(quickUser);
+          setUser(fallbackUser);
+          storageService.saveUser(fallbackUser);
+        } finally {
+          setIsLoadingAuth(false);
         }
-
-        // Unblock auth loading immediately
-        setIsLoadingAuth(false);
-
-        // Attach non-blocking Firestore document listener for real-time role & profile updates
-        const userDocRef = doc(db, 'users', currentFbUser.uid);
-        unsubscribeUserDoc = onSnapshot(userDocRef, (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            const userRole: 'customer' | 'admin' = (isAdminByEmail || data.role === 'admin') ? 'admin' : 'customer';
-
-            const updatedUser: User = {
-              id: currentFbUser.uid,
-              name: data.name || currentFbUser.displayName || 'Customer',
-              email: currentFbUser.email || data.email || '',
-              phone: data.phone || currentFbUser.phoneNumber || '',
-              role: userRole,
-              address: data.address,
-            };
-            setUser(updatedUser);
-            storageService.saveUser(updatedUser);
-          }
-        }, (error) => {
-          console.warn('Real-time user document listener notice:', error.message);
-        });
-
       } else {
         setUser(null);
         storageService.saveUser(null);
@@ -144,7 +178,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const isLoggedIn = Boolean(user && user.id && user.name);
-  const isAdmin = Boolean(user && user.role === 'admin');
+  const isAdmin = Boolean(!isLoadingAuth && user && user.role === 'admin');
 
   // Convert Bangladeshi phone number to normalized email alias for Firebase Auth if needed
   const resolveEmail = (emailOrPhone: string): string => {
@@ -191,13 +225,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
     const fbUser = userCredential.user;
 
-    const isAdminByEmail = Boolean(
-      fbUser.email && ADMIN_EMAILS.includes(fbUser.email.toLowerCase())
-    );
-
-    let resolvedRole: 'admin' | 'customer' = isAdminByEmail ? 'admin' : 'customer';
-
-    // Fetch user profile from Firestore users/{uid} with 8s timeout
+    // Fetch user profile strictly from Firestore users/{uid}
     try {
       const snap = await withTimeout(
         getDoc(doc(db, 'users', fbUser.uid)), 
@@ -206,11 +234,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
       if (snap.exists()) {
         const data = snap.data();
-        if (data.role === 'admin' || isAdminByEmail) {
-          resolvedRole = 'admin';
-        } else {
-          resolvedRole = 'customer';
-        }
+        const resolvedRole: 'admin' | 'customer' = data.role === 'admin' ? 'admin' : 'customer';
         const loggedUser: User = {
           id: fbUser.uid,
           name: data.name || fbUser.displayName || 'Customer',
@@ -227,17 +251,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('Firestore read notice during email login:', e);
     }
 
-    // Fallback if Firestore read takes longer or document hasn't been populated
+    // Fallback if Firestore read takes longer or document hasn't been populated: strictly customer
     const fallbackUser: User = {
       id: fbUser.uid,
       name: fbUser.displayName || 'Customer',
       email: fbUser.email || '',
       phone: '',
-      role: resolvedRole,
+      role: 'customer',
     };
     setUser(fallbackUser);
     storageService.saveUser(fallbackUser);
-    return resolvedRole;
+    return 'customer';
   };
 
   // 2. Email/Phone + Password Register
@@ -346,11 +370,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
     const fbUser = res.user;
 
-    const isAdminByEmail = Boolean(
-      fbUser.email && ADMIN_EMAILS.includes(fbUser.email.toLowerCase())
-    );
-
-    let resolvedRole: 'admin' | 'customer' = isAdminByEmail ? 'admin' : 'customer';
     const userDocRef = doc(db, 'users', fbUser.uid);
 
     // 2. Check if Firestore users/{uid} document already exists
@@ -362,13 +381,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
 
       if (snap.exists()) {
-        // Document exists: Preserve existing role! Never overwrite with 'customer'
+        // Document exists: Preserve existing role strictly from Firestore
         const data = snap.data();
-        if (data.role === 'admin' || isAdminByEmail) {
-          resolvedRole = 'admin';
-        } else {
-          resolvedRole = 'customer';
-        }
+        const resolvedRole: 'admin' | 'customer' = data.role === 'admin' ? 'admin' : 'customer';
 
         const existingUser: User = {
           id: fbUser.uid,
@@ -402,7 +417,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const errMessage = setDocErr instanceof Error ? setDocErr.message : String(setDocErr);
           const errCode = (setDocErr as { code?: string })?.code || 'offline';
           console.warn(`Firestore user document sync deferred on Google Sign-In [${errCode}]:`, errMessage);
-          // Non-blocking for auth session if already signed into Firebase Auth
         }
 
         const newUser: User = {
@@ -410,11 +424,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           name: fbUser.displayName || 'Customer',
           email: fbUser.email || '',
           phone: fbUser.phoneNumber || '',
-          role: resolvedRole,
+          role: 'customer',
         };
         setUser(newUser);
         storageService.saveUser(newUser);
-        return resolvedRole;
+        return 'customer';
       }
     } catch (e) {
       console.warn('Firestore read/check notice on Google Sign-In:', e);
@@ -423,11 +437,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         name: fbUser.displayName || 'Customer',
         email: fbUser.email || '',
         phone: fbUser.phoneNumber || '',
-        role: resolvedRole,
+        role: 'customer',
       };
       setUser(fallbackUser);
       storageService.saveUser(fallbackUser);
-      return resolvedRole;
+      return 'customer';
     }
   };
 

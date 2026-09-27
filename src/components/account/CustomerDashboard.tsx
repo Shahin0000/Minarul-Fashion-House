@@ -117,6 +117,8 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
       name,
       phone,
       email,
+      district,
+      division,
       address: {
         fullName: name,
         phone,
@@ -611,14 +613,52 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
                       </label>
                       <select
                         value={division}
-                        onChange={(e) => setDivision(e.target.value)}
+                        onChange={(e) => {
+                          const newDivName = e.target.value;
+                          setDivision(newDivName);
+                          const matchedDiv = bangladeshDivisions.find(
+                            (d) => d.nameEn === newDivName || d.nameBn === newDivName
+                          );
+                          if (matchedDiv && matchedDiv.districts.length > 0) {
+                            setDistrict(matchedDiv.districts[0].nameEn.split('(')[0].trim());
+                          }
+                        }}
                         className="w-full text-xs px-3.5 py-2.5 rounded-xl border border-stone-300 bg-white focus:border-amber-600 outline-none"
                       >
                         {bangladeshDivisions.map((d) => (
                           <option key={d.id} value={d.nameEn}>
-                            {d.nameEn}
+                            {d.nameEn} ({d.nameBn})
                           </option>
                         ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-stone-700 mb-1">
+                        {language === 'bn' ? 'জেলা (District)' : 'District'}
+                      </label>
+                      <select
+                        value={district}
+                        onChange={(e) => setDistrict(e.target.value)}
+                        className="w-full text-xs px-3.5 py-2.5 rounded-xl border border-stone-300 bg-white focus:border-amber-600 outline-none"
+                      >
+                        {(() => {
+                          const curDiv =
+                            bangladeshDivisions.find(
+                              (d) =>
+                                d.nameEn.toLowerCase() === division.toLowerCase() ||
+                                d.id.toLowerCase() === division.toLowerCase() ||
+                                d.nameBn === division
+                            ) || bangladeshDivisions[0];
+                          return curDiv.districts.map((d) => {
+                            const cleanEn = d.nameEn.split('(')[0].trim().replace(/\s+City$/i, '');
+                            return (
+                              <option key={d.id} value={cleanEn}>
+                                {d.nameBn} ({cleanEn})
+                              </option>
+                            );
+                          });
+                        })()}
                       </select>
                     </div>
 

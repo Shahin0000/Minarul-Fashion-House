@@ -489,14 +489,7 @@ class StorageService {
       const cleanId = orderId.trim();
       const docSnap = await getDoc(doc(db, 'orders', cleanId));
       if (docSnap.exists()) {
-        const d = docSnap.data();
-        return {
-          id: docSnap.id,
-          orderId: d.orderId || docSnap.id,
-          ...d,
-          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
-          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
-        } as Order;
+        return this.mapFirestoreOrder(docSnap.id, docSnap.data());
       }
       return null;
     } catch (e: any) {
@@ -505,20 +498,108 @@ class StorageService {
     }
   }
 
+  mapFirestoreOrder(docId: string, d: any): Order {
+    const rawShipping = d.shippingAddress || d.deliveryAddress || {};
+    const shippingFullName = (
+      rawShipping.fullName ||
+      rawShipping.name ||
+      d.customerName ||
+      'Customer'
+    ).trim();
+    const shippingPhone = (
+      rawShipping.phone ||
+      d.customerPhone ||
+      ''
+    ).trim();
+    const shippingEmail = (
+      rawShipping.email ||
+      d.customerEmail ||
+      ''
+    ).trim();
+    const shippingDistrict = (
+      rawShipping.district ||
+      d.district ||
+      ''
+    ).trim();
+    const shippingDivision = (
+      rawShipping.division ||
+      d.division ||
+      'Dhaka'
+    ).trim();
+    const shippingAddressStr = (
+      rawShipping.address ||
+      ''
+    ).trim();
+
+    return {
+      id: docId,
+      orderId: d.orderId || docId,
+      customerId: d.customerId,
+      customerName: d.customerName || shippingFullName,
+      customerEmail: d.customerEmail || shippingEmail,
+      customerPhone: d.customerPhone || shippingPhone,
+      items: d.items || [],
+      subtotal: Number(d.subtotal) || 0,
+      discount: Number(d.discount) || 0,
+      couponCode: d.couponCode,
+      deliveryCharge: Number(d.deliveryCharge) || 0,
+      totalAmount: Number(d.totalAmount) || 0,
+      paymentMethod: d.paymentMethod || 'cod',
+      paymentStatus: d.paymentStatus || 'unpaid',
+      orderStatus: d.orderStatus || 'pending',
+      senderMobile: d.senderMobile || '',
+      transactionId: d.transactionId || '',
+      courierName: d.courierName || '',
+      courierTrackingId: d.courierTrackingId || '',
+      shippingAddress: {
+        fullName: shippingFullName,
+        name: shippingFullName,
+        phone: shippingPhone,
+        email: shippingEmail,
+        division: shippingDivision,
+        district: shippingDistrict,
+        address: shippingAddressStr,
+        notes: rawShipping.notes || '',
+      },
+      createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
+      updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
+    } as Order;
+  }
+
+  async fetchCustomerProfile(customerId: string): Promise<any | null> {
+    if (!customerId || !customerId.trim()) {
+      console.error("Order customerId is missing");
+      return null;
+    }
+    try {
+      const userRef = doc(db, 'users', customerId.trim());
+      const userSnap = await getDoc(userRef);
+      if (!userSnap.exists()) {
+        console.warn("Customer profile not found:", customerId);
+        return null;
+      }
+      const data = userSnap.data();
+      return {
+        id: customerId,
+        name: data.name || data.displayName || '',
+        email: data.email || '',
+        phone: data.phone || data.phoneNumber || '',
+        role: data.role === 'admin' ? 'admin' : 'customer',
+        address: data.address,
+        district: data.district || (typeof data.address === 'object' ? data.address?.district : '') || '',
+        division: data.division || (typeof data.address === 'object' ? data.address?.division : '') || '',
+      };
+    } catch (error: any) {
+      console.error("ORDER CUSTOMER FETCH ERROR:", error?.code, error?.message);
+      return null;
+    }
+  }
+
   async fetchAdminOrders(): Promise<Order[]> {
     try {
       const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
       const snapshot = await getDocs(q);
-      const list: Order[] = snapshot.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: docSnap.id,
-          orderId: d.orderId || docSnap.id,
-          ...d,
-          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
-          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
-        } as Order;
-      });
+      const list: Order[] = snapshot.docs.map((docSnap) => this.mapFirestoreOrder(docSnap.id, docSnap.data()));
       localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(list));
       this.emitChange();
       return list;
@@ -531,16 +612,7 @@ class StorageService {
   subscribeAdminOrders(callback: (orders: Order[]) => void, onError?: (err: Error) => void): () => void {
     const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
     return onSnapshot(q, (snapshot) => {
-      const list: Order[] = snapshot.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: docSnap.id,
-          orderId: d.orderId || docSnap.id,
-          ...d,
-          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
-          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
-        } as Order;
-      });
+      const list: Order[] = snapshot.docs.map((docSnap) => this.mapFirestoreOrder(docSnap.id, docSnap.data()));
       localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(list));
       this.emitChange();
       callback(list);
@@ -554,16 +626,7 @@ class StorageService {
     try {
       const q = query(collection(db, 'orders'), where('customerId', '==', customerId));
       const snapshot = await getDocs(q);
-      const list: Order[] = snapshot.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: docSnap.id,
-          orderId: d.orderId || docSnap.id,
-          ...d,
-          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
-          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
-        } as Order;
-      });
+      const list: Order[] = snapshot.docs.map((docSnap) => this.mapFirestoreOrder(docSnap.id, docSnap.data()));
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       return list;
     } catch (e: any) {
@@ -575,16 +638,7 @@ class StorageService {
   subscribeCustomerOrders(customerId: string, callback: (orders: Order[]) => void, onError?: (err: Error) => void): () => void {
     const q = query(collection(db, 'orders'), where('customerId', '==', customerId));
     return onSnapshot(q, (snapshot) => {
-      const list: Order[] = snapshot.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: docSnap.id,
-          orderId: d.orderId || docSnap.id,
-          ...d,
-          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : (d.createdAt || new Date().toISOString()),
-          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : (d.updatedAt || new Date().toISOString()),
-        } as Order;
-      });
+      const list: Order[] = snapshot.docs.map((docSnap) => this.mapFirestoreOrder(docSnap.id, docSnap.data()));
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       callback(list);
     }, (err) => {
@@ -642,9 +696,14 @@ class StorageService {
       transactionId: order.paymentMethod === 'cod' ? '' : (order.transactionId || ''),
 
       shippingAddress: {
+        fullName: customerName,
         name: customerName,
         phone: customerPhone,
-        address: formattedAddress,
+        email: customerEmail,
+        division: order.shippingAddress?.division || '',
+        district: order.shippingAddress?.district || '',
+        address: order.shippingAddress?.address || formattedAddress,
+        notes: order.shippingAddress?.notes || '',
       },
 
       createdAt: serverTimestamp(),
@@ -685,6 +744,16 @@ class StorageService {
         customerName,
         customerEmail,
         customerPhone,
+        shippingAddress: {
+          fullName: customerName,
+          name: customerName,
+          phone: customerPhone,
+          email: customerEmail,
+          division: order.shippingAddress?.division || '',
+          district: order.shippingAddress?.district || '',
+          address: order.shippingAddress?.address || formattedAddress,
+          notes: order.shippingAddress?.notes || '',
+        },
         updatedAt: new Date().toISOString(),
       };
       if (existingIndex >= 0) {
@@ -705,13 +774,52 @@ class StorageService {
 
   async updateOrder(updatedOrder: Order): Promise<void> {
     try {
+      const shippingFullName = (
+        updatedOrder.shippingAddress?.fullName ||
+        updatedOrder.shippingAddress?.name ||
+        updatedOrder.customerName ||
+        ''
+      ).trim();
+      const shippingPhone = (
+        updatedOrder.shippingAddress?.phone ||
+        updatedOrder.customerPhone ||
+        ''
+      ).trim();
+      const shippingEmail = (
+        updatedOrder.shippingAddress?.email ||
+        updatedOrder.customerEmail ||
+        ''
+      ).trim();
+      const shippingDistrict = (updatedOrder.shippingAddress?.district || '').trim();
+      const shippingDivision = (updatedOrder.shippingAddress?.division || 'Dhaka').trim();
+      const shippingAddressStr = (updatedOrder.shippingAddress?.address || '').trim();
+      const shippingNotes = (updatedOrder.shippingAddress?.notes || '').trim();
+
       const payload: Record<string, unknown> = {
-        ...updatedOrder,
+        deliveryCharge: updatedOrder.deliveryCharge,
+        totalAmount: updatedOrder.totalAmount,
+        orderStatus: updatedOrder.orderStatus,
+        paymentStatus: updatedOrder.paymentStatus,
+        customerName: shippingFullName,
+        customerPhone: shippingPhone,
+        customerEmail: shippingEmail,
+        courierName: updatedOrder.courierName || '',
+        courierTrackingId: updatedOrder.courierTrackingId || '',
+        shippingAddress: {
+          fullName: shippingFullName,
+          name: shippingFullName,
+          phone: shippingPhone,
+          email: shippingEmail,
+          division: shippingDivision,
+          district: shippingDistrict,
+          address: shippingAddressStr,
+          notes: shippingNotes,
+        },
         updatedAt: serverTimestamp(),
       };
       const clean = JSON.parse(JSON.stringify(payload, (k, v) => (v === undefined ? null : v)));
       clean.updatedAt = serverTimestamp();
-      await setDoc(doc(db, 'orders', updatedOrder.id), clean, { merge: true });
+      await updateDoc(doc(db, 'orders', updatedOrder.id), clean);
       console.log('✅ Firestore order updated:', updatedOrder.id);
 
       const orders = this.getOrders();
@@ -721,9 +829,11 @@ class StorageService {
         localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
         this.emitChange();
       }
-    } catch (e: any) {
-      console.error('❌ Error updating order in Firestore:', e?.code, e?.message);
-      throw e;
+    } catch (error: any) {
+      console.error("ORDER UPDATE ERROR:", error);
+      console.error("ERROR CODE:", error?.code);
+      console.error("ERROR MESSAGE:", error?.message);
+      throw error;
     }
   }
 
@@ -735,9 +845,11 @@ class StorageService {
       const orders = this.getOrders().filter((o) => o.id !== orderId);
       localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
       this.emitChange();
-    } catch (e: any) {
-      console.error('❌ Error deleting order from Firestore:', e?.code, e?.message);
-      throw e;
+    } catch (error: any) {
+      console.error("ORDER UPDATE ERROR:", error);
+      console.error("ERROR CODE:", error?.code);
+      console.error("ERROR MESSAGE:", error?.message);
+      throw error;
     }
   }
 
@@ -755,7 +867,7 @@ class StorageService {
       if (courierTrackingId !== undefined) updatePayload.courierTrackingId = courierTrackingId;
       if (courierName !== undefined) updatePayload.courierName = courierName;
       await updateDoc(doc(db, 'orders', orderId), updatePayload);
-      console.log('✅ Firestore orderStatus updated:', orderId, status);
+      console.log('✅ FIRESTORE ORDER UPDATE SUCCESS:', orderId, status);
 
       const orders = this.getOrders();
       const order = orders.find((o) => o.id === orderId);
@@ -767,9 +879,11 @@ class StorageService {
         localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
         this.emitChange();
       }
-    } catch (e: any) {
-      console.error('❌ Error updating orderStatus in Firestore:', e?.code, e?.message);
-      throw e;
+    } catch (error: any) {
+      console.error("ORDER UPDATE ERROR:", error);
+      console.error("ERROR CODE:", error?.code);
+      console.error("ERROR MESSAGE:", error?.message);
+      throw error;
     }
   }
 
@@ -779,7 +893,7 @@ class StorageService {
         paymentStatus: status,
         updatedAt: serverTimestamp(),
       });
-      console.log('✅ Firestore paymentStatus updated:', orderId, status);
+      console.log('✅ FIRESTORE PAYMENT STATUS UPDATE SUCCESS:', orderId, status);
 
       const orders = this.getOrders();
       const order = orders.find((o) => o.id === orderId);
@@ -789,9 +903,11 @@ class StorageService {
         localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
         this.emitChange();
       }
-    } catch (e: any) {
-      console.error('❌ Error updating paymentStatus in Firestore:', e?.code, e?.message);
-      throw e;
+    } catch (error: any) {
+      console.error("ORDER UPDATE ERROR:", error);
+      console.error("ERROR CODE:", error?.code);
+      console.error("ERROR MESSAGE:", error?.message);
+      throw error;
     }
   }
 

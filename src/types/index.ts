@@ -57,6 +57,7 @@ export interface CartItem {
 
 export interface ShippingAddress {
   fullName: string;
+  name?: string;
   phone: string;
   email?: string;
   division: string;
@@ -164,5 +165,7 @@ export interface User {
   phone: string;
   role: 'customer' | 'admin';
   address?: ShippingAddress;
+  district?: string;
+  division?: string;
 }
 

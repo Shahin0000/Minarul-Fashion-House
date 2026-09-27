@@ -55,7 +55,7 @@ import { StaticPages } from './components/info/StaticPages';
 const MainApp: React.FC = () => {
   const { language, formatPrice, t } = useLanguage();
   const { openCart, buyNow } = useCart();
-  const { isAdmin, isLoginModalOpen, closeLoginModal } = useAuth();
+  const { user, isAdmin, isLoadingAuth, isLoginModalOpen, closeLoginModal } = useAuth();
 
   // Navigation State
   const [currentView, setCurrentView] = useState<string>('home');
@@ -109,6 +109,13 @@ const MainApp: React.FC = () => {
     window.addEventListener('mfh:navigate', handleNavEvent);
     return () => window.removeEventListener('mfh:navigate', handleNavEvent);
   }, []);
+
+  // Enforce Admin View Security: If user is not verified admin in Firestore, redirect to Customer Dashboard
+  useEffect(() => {
+    if (!isLoadingAuth && currentView === 'admin' && !isAdmin) {
+      setCurrentView('account');
+    }
+  }, [currentView, isAdmin, isLoadingAuth]);
 
   // Support URL routing for products (e.g. /product/:id, ?productId=..., ?product=...)
   useEffect(() => {
@@ -567,7 +574,7 @@ const MainApp: React.FC = () => {
         )}
 
         {/* VIEW 7: ADMIN PORTAL */}
-        {currentView === 'admin' && (
+        {currentView === 'admin' && isAdmin && (
           <AdminDashboard
             onViewInvoice={(ord) => {
               setActiveOrder(ord);
