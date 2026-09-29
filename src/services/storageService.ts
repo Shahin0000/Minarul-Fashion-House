@@ -1,19 +1,25 @@
-import { Product, Order, Coupon, Review, User, SiteSettings, HeroSlide } from '../types';
+import { Product, Order, Coupon, Review, ReviewReport, User, SiteSettings, HeroSlide } from '../types';
 import { initialProducts, initialCoupons } from '../data/productsData';
 import { auth, db, storage } from '../firebase';
+import { 
+  settingsService, 
+  EMPTY_WEBSITE_SETTINGS, 
+  EMPTY_PAYMENT_SETTINGS, 
+  EMPTY_LOGISTICS_SETTINGS 
+} from './settingsService';
 import { 
   collection, 
   doc, 
   setDoc, 
   deleteDoc, 
   updateDoc, 
-  getDoc,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  serverTimestamp
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot, 
+  serverTimestamp 
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
@@ -192,17 +198,11 @@ class StorageService {
         console.warn('Firestore orders listener notice:', err.message);
       });
 
-      // 3. Sync Settings
-      onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-        if (docSnap.exists()) {
-          const data = { ...defaultSettings, ...docSnap.data() } as SiteSettings;
-          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
-          this.emitChange();
-        } else {
-          this.seedInitialSettings();
-        }
-      }, (err) => {
-        console.warn('Firestore settings listener:', err.message);
+      // 3. Sync Settings via settingsService
+      settingsService.subscribe(() => {
+        const combined = settingsService.getCombinedSettings();
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(combined));
+        this.emitChange();
       });
 
       // 4. Sync Hero Slides
@@ -242,7 +242,38 @@ class StorageService {
         if (!snapshot.empty) {
           const list: Review[] = [];
           snapshot.forEach((docSnap) => {
-            list.push({ ...docSnap.data(), id: docSnap.id } as Review);
+            const data = docSnap.data();
+            list.push({
+              id: docSnap.id,
+              reviewId: docSnap.id,
+              productId: data.productId,
+              orderId: data.orderId,
+              customerId: data.customerId,
+              customerName: data.customerName || data.userName || 'Verified Buyer',
+              customerEmail: data.customerEmail || '',
+              userName: data.customerName || data.userName || 'Verified Buyer',
+              userPhoneMasked: data.userPhoneMasked,
+              rating: Number(data.rating) || 5,
+              comment: data.reviewText || data.comment || '',
+              reviewText: data.reviewText || data.comment || '',
+              reviewImage: data.reviewImage || (Array.isArray(data.reviewImages) ? data.reviewImages[0] : '') || '',
+              reviewImages: Array.isArray(data.reviewImages) 
+                ? data.reviewImages 
+                : (data.reviewImage ? [data.reviewImage] : []),
+              verifiedPurchase: data.verifiedPurchase !== false,
+              status: data.status || 'published',
+              date: data.createdAt?.toDate 
+                ? data.createdAt.toDate().toISOString().split('T')[0] 
+                : (data.date || new Date().toISOString().split('T')[0]),
+              createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
+              updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
+            } as Review);
+          });
+          // Sort newest first
+          list.sort((a, b) => {
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : new Date(a.date).getTime();
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : new Date(b.date).getTime();
+            return dateB - dateA;
           });
           localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(list));
           this.emitChange();
@@ -295,14 +326,6 @@ class StorageService {
     }
   }
 
-  private async seedInitialSettings() {
-    try {
-      await setDoc(doc(db, 'settings', 'general'), defaultSettings, { merge: true });
-    } catch (e) {
-      console.warn('Could not auto-seed settings to Firestore:', e);
-    }
-  }
-
   private async seedInitialHeroSlides() {
     try {
       for (const s of defaultHeroSlides) {
@@ -333,28 +356,63 @@ class StorageService {
     }
   }
 
+  private async seedInitialSettings() {
+    try {
+      const webSnap = await getDoc(doc(db, 'settings', 'website'));
+      if (!webSnap.exists()) {
+        await setDoc(doc(db, 'settings', 'website'), { ...EMPTY_WEBSITE_SETTINGS, updatedAt: serverTimestamp() }, { merge: true });
+      }
+      const paySnap = await getDoc(doc(db, 'settings', 'payment'));
+      if (!paySnap.exists()) {
+        await setDoc(doc(db, 'settings', 'payment'), { ...EMPTY_PAYMENT_SETTINGS, updatedAt: serverTimestamp() }, { merge: true });
+      }
+      const logSnap = await getDoc(doc(db, 'settings', 'logistics'));
+      if (!logSnap.exists()) {
+        await setDoc(doc(db, 'settings', 'logistics'), { ...EMPTY_LOGISTICS_SETTINGS, updatedAt: serverTimestamp() }, { merge: true });
+      }
+    } catch (e) {
+      console.warn('Could not check or seed settings in Firestore:', e);
+    }
+  }
+
   // ---------------- SITE SETTINGS ----------------
   getSettings(): SiteSettings {
     try {
-      const data = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-      if (!data) {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(defaultSettings));
-        return defaultSettings;
-      }
-      return { ...defaultSettings, ...JSON.parse(data) };
+      return settingsService.getCombinedSettings();
     } catch {
       return defaultSettings;
     }
   }
 
   async saveSettings(settings: SiteSettings): Promise<void> {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    await settingsService.saveWebsiteSettings({
+      siteName: settings.siteName,
+      siteDescription: settings.siteDescription,
+      logo: settings.logo,
+      announcementEn: settings.announcementEn,
+      announcementBn: settings.announcementBn,
+      phone: settings.hotline,
+      whatsapp: settings.whatsapp,
+      email: settings.supportEmail,
+      address: settings.flagshipAddressBn || settings.flagshipAddressEn,
+      facebook: settings.facebook,
+      instagram: settings.instagram,
+    });
+
+    await settingsService.savePaymentSettings({
+      bkash: { number: settings.bkashMerchantNumber, enabled: true },
+      nagad: { number: settings.nagadMerchantNumber, enabled: true },
+      rocket: { number: settings.rocketMerchantNumber, enabled: true },
+    });
+
+    await settingsService.saveLogisticsSettings({
+      defaultCourier: settings.defaultCourier || 'Steadfast',
+      deliveryChargeInsideDhaka: settings.dhakaDeliveryFee,
+      deliveryChargeOutsideDhaka: settings.outsideDhakaDeliveryFee,
+      freeShippingThreshold: settings.freeShippingThreshold,
+    });
+
     this.emitChange();
-    try {
-      await setDoc(doc(db, 'settings', 'general'), settings);
-    } catch (e) {
-      console.error('Error saving settings to Firestore:', e);
-    }
   }
 
   // ---------------- HERO SLIDES ----------------
@@ -972,52 +1030,302 @@ class StorageService {
   }
 
   // ---------------- REVIEWS ----------------
-  getReviews(productId?: string): Review[] {
+  getReviews(productId?: string, onlyPublished: boolean = true): Review[] {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.REVIEWS);
       const all: Review[] = data ? JSON.parse(data) : initialReviews;
       if (!data) {
         localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(initialReviews));
       }
-      return productId ? all.filter((r) => r.productId === productId) : all;
+
+      let filtered = all;
+      if (onlyPublished) {
+        filtered = filtered.filter((r) => r.status === 'published' || !r.status);
+      }
+      if (productId) {
+        filtered = filtered.filter((r) => r.productId === productId);
+      }
+      return filtered;
     } catch {
       return initialReviews;
     }
   }
 
-  async addReview(review: Review): Promise<void> {
-    const reviews = this.getReviews();
-    reviews.unshift(review);
-    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
-
-    // update product rating & review count
-    const products = this.getProducts();
-    const product = products.find((p) => p.id === review.productId);
-    if (product) {
-      const productReviews = reviews.filter((r) => r.productId === review.productId);
-      const avg = productReviews.reduce((sum, r) => sum + r.rating, 0) / productReviews.length;
-      product.rating = Number(avg.toFixed(1));
-      product.reviewCount = productReviews.length;
-      this.saveProduct(product);
+  getAllReviewsForAdmin(): Review[] {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.REVIEWS);
+      const all: Review[] = data ? JSON.parse(data) : initialReviews;
+      return all;
+    } catch {
+      return initialReviews;
     }
+  }
+
+  hasCustomerReviewed(customerId: string, productId: string, orderId: string): boolean {
+    const all = this.getAllReviewsForAdmin();
+    return all.some(
+      (r) =>
+        r.productId === productId &&
+        r.orderId === orderId &&
+        r.customerId === customerId
+    );
+  }
+
+  getCustomerDeliveredOrdersForProduct(customerId: string, productId: string): { order: Order; alreadyReviewed: boolean }[] {
+    const allOrders = this.getOrders();
+    const customerOrders = allOrders.filter(
+      (o) => o.customerId === customerId && o.orderStatus === 'delivered'
+    );
+
+    const matching: { order: Order; alreadyReviewed: boolean }[] = [];
+    for (const order of customerOrders) {
+      const hasProduct = order.items && order.items.some((item) => item.productId === productId);
+      if (hasProduct) {
+        matching.push({
+          order,
+          alreadyReviewed: this.hasCustomerReviewed(customerId, productId, order.id),
+        });
+      }
+    }
+    return matching;
+  }
+
+  async uploadReviewImage(file: File, productId: string, customerId: string, reviewId: string): Promise<string> {
+    const cleanFileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+    const storageRef = ref(storage, `reviews/${productId}/${customerId}/${reviewId}/${cleanFileName}`);
+    const snapshot = await uploadBytes(storageRef, file);
+    const downloadUrl = await getDownloadURL(snapshot.ref);
+    return downloadUrl;
+  }
+
+  async submitCustomerReview(payload: {
+    productId: string;
+    orderId: string;
+    rating: number;
+    reviewText: string;
+    photos: File[];
+  }): Promise<Review> {
+    const user = auth.currentUser;
+    if (!user) {
+      throw new Error('অনুগ্রহ করে রিভিউ দেওয়ার আগে লগইন করুন। (Login Required)');
+    }
+
+    const { productId, orderId, rating, reviewText, photos } = payload;
+
+    if (!rating || rating < 1 || rating > 5) {
+      throw new Error('দয়া করে ১ থেকে ৫ স্টার রেটিং নির্বাচন করুন। (Rating Required)');
+    }
+
+    if (!reviewText || reviewText.trim().length < 5) {
+      throw new Error('দয়া করে আপনার অভিজ্ঞতা কমপক্ষে ৫টি অক্ষরে লিখুন। (Comment Required)');
+    }
+
+    if (!photos || photos.length === 0) {
+      throw new Error('দয়া করে ডেলিভারি পাওয়া প্রোডাক্টের অন্তত ১টি ছবি আপলোড করুন। (Product Photo Required)');
+    }
+
+    if (photos.length > 5) {
+      throw new Error('সর্বোচ্চ ৫টি ছবি আপলোড করা যাবে। (Max 5 Photos)');
+    }
+
+    for (const p of photos) {
+      if (p.size > 5 * 1024 * 1024) {
+        throw new Error(`"${p.name}" ছবির সাইজ ৫ মেগাবাইটের বেশি। প্রতিটি ছবি সর্বোচ্চ 5MB হতে হবে।`);
+      }
+    }
+
+    // Check duplicate review
+    const customerId = user.uid;
+    const reviewId = `${customerId}_${productId}_${orderId}`;
+
+    if (this.hasCustomerReviewed(customerId, productId, orderId)) {
+      throw new Error('আপনি এই অর্ডারের জন্য ইতিমধ্যে রিভিউ প্রদান করেছেন। (Already Reviewed)');
+    }
+
+    // Verify order in Firestore directly
+    try {
+      const orderDocSnap = await getDoc(doc(db, 'orders', orderId));
+      if (!orderDocSnap.exists()) {
+        throw new Error('অর্ডার রেকর্ড পাওয়া যায়নি।');
+      }
+      const orderData = orderDocSnap.data();
+      if (orderData.customerId !== customerId) {
+        throw new Error('শুধুমাত্র নিজের অর্ডারের জন্য রিভিউ দেওয়া যাবে।');
+      }
+      if (orderData.orderStatus !== 'delivered') {
+        throw new Error('প্রোডাক্টটি ডেলিভারি সম্পন্ন হওয়ার পরই কেবল রিভিউ দেওয়া সম্ভব।');
+      }
+      const hasItem = Array.isArray(orderData.items) && orderData.items.some((i: any) => i.productId === productId);
+      if (!hasItem) {
+        throw new Error('এই অর্ডারে নির্বাচিত প্রোডাক্টটি অন্তর্ভুক্ত নেই।');
+      }
+    } catch (orderErr: any) {
+      console.warn('Order verification notice:', orderErr.message);
+      // If error thrown above was validation, rethrow it
+      if (orderErr.message && !orderErr.message.includes('Firestore')) {
+        throw orderErr;
+      }
+    }
+
+    // Upload photos to Firebase Storage
+    const imageUrls: string[] = [];
+    for (const photo of photos) {
+      const url = await this.uploadReviewImage(photo, productId, customerId, reviewId);
+      imageUrls.push(url);
+    }
+
+    const customerName = user.displayName || user.email?.split('@')[0] || 'Verified Customer';
+
+    const reviewDoc: Review = {
+      id: reviewId,
+      reviewId,
+      productId,
+      orderId,
+      customerId,
+      customerName,
+      customerEmail: user.email || '',
+      userName: customerName,
+      rating,
+      comment: reviewText.trim(),
+      reviewText: reviewText.trim(),
+      reviewImage: imageUrls[0] || '',
+      reviewImages: imageUrls,
+      verifiedPurchase: true,
+      status: 'published',
+      date: new Date().toISOString().split('T')[0],
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    // Save to Firestore
+    await setDoc(doc(db, 'reviews', reviewId), reviewDoc);
+    console.log('✅ Review saved to Firestore:', reviewId);
+
+    // Save to local cache & recalculate
+    const currentReviews = this.getAllReviewsForAdmin();
+    const existingIndex = currentReviews.findIndex((r) => r.id === reviewId);
+    if (existingIndex >= 0) {
+      currentReviews[existingIndex] = { ...reviewDoc, createdAt: new Date().toISOString() };
+    } else {
+      currentReviews.unshift({ ...reviewDoc, createdAt: new Date().toISOString() });
+    }
+    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(currentReviews));
+
+    // Recalculate product rating
+    await this.recalculateProductRating(productId);
+
     this.emitChange();
+    return reviewDoc;
+  }
+
+  async recalculateProductRating(productId: string): Promise<void> {
+    try {
+      const publishedReviews = this.getReviews(productId, true);
+      const products = this.getProducts();
+      const product = products.find((p) => p.id === productId);
+
+      let newRating = 5.0;
+      let newCount = 0;
+
+      if (publishedReviews.length > 0) {
+        const totalRating = publishedReviews.reduce((sum, r) => sum + r.rating, 0);
+        newRating = Number((totalRating / publishedReviews.length).toFixed(1));
+        newCount = publishedReviews.length;
+      }
+
+      if (product) {
+        product.rating = newRating;
+        product.reviewCount = newCount;
+        this.saveProduct(product);
+      }
+
+      // Update Firestore product rating if exists
+      const productRef = doc(db, 'products', productId);
+      await updateDoc(productRef, {
+        rating: newRating,
+        reviewCount: newCount,
+        updatedAt: serverTimestamp(),
+      });
+      console.log(`✅ Updated rating for product ${productId}: ${newRating} (${newCount} reviews)`);
+    } catch (e: any) {
+      console.warn('Could not update product rating in Firestore:', e?.message);
+    }
+  }
+
+  async updateReviewStatus(reviewId: string, status: 'published' | 'hidden' | 'pending'): Promise<void> {
+    const reviews = this.getAllReviewsForAdmin();
+    const target = reviews.find((r) => r.id === reviewId);
+    if (target) {
+      target.status = status;
+      localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
+      this.emitChange();
+    }
 
     try {
-      await setDoc(doc(db, 'reviews', review.id), review);
+      await updateDoc(doc(db, 'reviews', reviewId), {
+        status,
+        updatedAt: serverTimestamp(),
+      });
+      if (target?.productId) {
+        await this.recalculateProductRating(target.productId);
+      }
     } catch (e) {
-      console.error('Error adding review to Firestore:', e);
+      console.error('Error updating review status in Firestore:', e);
+      throw e;
     }
   }
 
   async deleteReview(reviewId: string): Promise<void> {
-    const reviews = this.getReviews().filter((r) => r.id !== reviewId);
-    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
+    const reviews = this.getAllReviewsForAdmin();
+    const target = reviews.find((r) => r.id === reviewId);
+    const updated = reviews.filter((r) => r.id !== reviewId);
+    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(updated));
     this.emitChange();
 
     try {
       await deleteDoc(doc(db, 'reviews', reviewId));
+      if (target?.productId) {
+        await this.recalculateProductRating(target.productId);
+      }
     } catch (e) {
       console.error('Error deleting review from Firestore:', e);
+      throw e;
+    }
+  }
+
+  async reportReview(reviewId: string, productId: string, reason: string): Promise<void> {
+    const user = auth.currentUser;
+    const reportId = `rep_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const reportData: ReviewReport = {
+      reportId,
+      reviewId,
+      productId,
+      customerId: user?.uid,
+      customerName: user?.displayName || user?.email || 'Anonymous',
+      reason,
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      await setDoc(doc(db, 'reviewReports', reportId), reportData);
+      console.log('✅ Review reported:', reportId);
+    } catch (e) {
+      console.error('Error reporting review:', e);
+      throw e;
+    }
+  }
+
+  async getReviewReports(): Promise<ReviewReport[]> {
+    try {
+      const snap = await getDocs(collection(db, 'reviewReports'));
+      const list: ReviewReport[] = [];
+      snap.forEach((d) => {
+        list.push({ ...d.data(), reportId: d.id } as ReviewReport);
+      });
+      return list;
+    } catch (e) {
+      console.warn('Error fetching review reports:', e);
+      return [];
     }
   }
 

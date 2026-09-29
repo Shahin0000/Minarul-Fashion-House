@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Phone, 
   Mail, 
@@ -10,9 +10,12 @@ import {
   Heart,
   Facebook,
   Instagram,
-  Youtube
+  Youtube,
+  MessageCircle
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { settingsService } from '../../services/settingsService';
+import { WebsiteSettings } from '../../types';
 
 interface FooterProps {
   onNavigate: (view: string, filter?: string) => void;
@@ -20,6 +23,21 @@ interface FooterProps {
 
 export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
   const { language, t } = useLanguage();
+  const [websiteSettings, setWebsiteSettings] = useState<WebsiteSettings>(() =>
+    settingsService.getCachedWebsiteSettings()
+  );
+
+  useEffect(() => {
+    // Initial fetch from Firestore
+    settingsService.getWebsiteSettings().then((res) => {
+      setWebsiteSettings(res);
+    });
+
+    const unsub = settingsService.subscribe(() => {
+      setWebsiteSettings(settingsService.getCachedWebsiteSettings());
+    });
+    return unsub;
+  }, []);
 
   return (
     <footer className="bg-stone-950 text-stone-300 pt-16 pb-12 border-t border-stone-800">
@@ -72,12 +90,20 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
           {/* Brand Info */}
           <div className="lg:col-span-2 space-y-4">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-amber-600 flex items-center justify-center text-white font-serif font-black text-lg">
-                M
-              </div>
+              {websiteSettings.logo ? (
+                <img
+                  src={websiteSettings.logo}
+                  alt={websiteSettings.siteName || 'MINARUL FASHION HOUSE'}
+                  className="w-10 h-10 object-contain rounded-xl"
+                />
+              ) : (
+                <div className="w-9 h-9 rounded-xl bg-amber-600 flex items-center justify-center text-white font-serif font-black text-lg">
+                  {(websiteSettings.siteName || 'M').charAt(0).toUpperCase()}
+                </div>
+              )}
               <div className="flex flex-col">
                 <span className="font-serif text-xl font-bold tracking-tight text-white">
-                  MINARUL
+                  {websiteSettings.siteName || 'MINARUL FASHION HOUSE'}
                 </span>
                 <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-500">
                   Fashion House
@@ -86,40 +112,70 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
             </div>
 
             <p className="text-stone-400 leading-relaxed pr-6">
-              {language === 'bn'
-                ? 'মিনারুল ফ্যাশন হাউস বাংলাদেশের ঐতিহ্য ও আধুনিক রুচিশীল পোশাকের এক অনন্য ঠিকানা। পুরুষ, মহিলা ও শিশুদের জন্য শতভাগ নিখুঁত ফিটিং ও কোয়ালিটি সম্পন্ন পোশাক পৌঁছে দিচ্ছি সারা দেশের ঘরে ঘরে।'
-                : 'Minarul Fashion House is Bangladesh’s leading lifestyle apparel destination crafting timeless ethnic and contemporary apparel for men, women, and children nationwide.'}
+              {websiteSettings.siteDescription || (language === 'bn'
+                ? 'মিনারুল ফ্যাশন হাউস বাংলাদেশের ঐতিহ্য ও আধুনিক রুচিশীল পোশাকের এক অনন্য ঠিকানা।'
+                : 'Minarul Fashion House is Bangladesh’s leading lifestyle apparel destination.')}
             </p>
 
             <div className="space-y-2 pt-1 text-stone-300">
-              <div className="flex items-center gap-2.5">
-                <MapPin className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                <span>
-                  {language === 'bn'
-                    ? 'প্রধান শোরুম: লেভেল ৩, শপিং কমপ্লেক্স, ধানমন্ডি ২৭, ঢাকা-১২০৯'
-                    : 'Flagship Store: Level 3, Shopping Complex, Dhanmondi 27, Dhaka-1209'}
-                </span>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <Phone className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                <span>+880 1712-345678 / +880 1987-654321</span>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <Mail className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                <span>support@minarulfashion.com</span>
-              </div>
+              {websiteSettings.address && (
+                <div className="flex items-start gap-2.5">
+                  <MapPin className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <span>{websiteSettings.address}</span>
+                </div>
+              )}
+              {websiteSettings.phone && (
+                <div className="flex items-center gap-2.5">
+                  <Phone className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                  <a href={`tel:${websiteSettings.phone.replace(/[^0-9+]/g, '')}`} className="hover:text-amber-400 transition-colors">
+                    {websiteSettings.phone}
+                  </a>
+                </div>
+              )}
+              {websiteSettings.email && (
+                <div className="flex items-center gap-2.5">
+                  <Mail className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                  <a href={`mailto:${websiteSettings.email}`} className="hover:text-amber-400 transition-colors">
+                    {websiteSettings.email}
+                  </a>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-3 pt-2">
-              <a href="#facebook" className="w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-600 transition-colors">
-                <Facebook className="w-4 h-4" />
-              </a>
-              <a href="#instagram" className="w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-600 transition-colors">
-                <Instagram className="w-4 h-4" />
-              </a>
-              <a href="#youtube" className="w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-600 transition-colors">
-                <Youtube className="w-4 h-4" />
-              </a>
+              {websiteSettings.facebook && (
+                <a
+                  href={websiteSettings.facebook.startsWith('http') ? websiteSettings.facebook : `https://${websiteSettings.facebook}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-600 transition-colors"
+                  aria-label="Facebook"
+                >
+                  <Facebook className="w-4 h-4" />
+                </a>
+              )}
+              {websiteSettings.instagram && (
+                <a
+                  href={websiteSettings.instagram.startsWith('http') ? websiteSettings.instagram : `https://${websiteSettings.instagram}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-600 transition-colors"
+                  aria-label="Instagram"
+                >
+                  <Instagram className="w-4 h-4" />
+                </a>
+              )}
+              {websiteSettings.whatsapp && (
+                <a
+                  href={`https://wa.me/${websiteSettings.whatsapp.replace(/[^0-9]/g, '')}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-center text-stone-400 hover:text-emerald-400 hover:border-emerald-600 transition-colors"
+                  aria-label="WhatsApp"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                </a>
+              )}
             </div>
           </div>
 

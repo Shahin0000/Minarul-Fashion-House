@@ -13,7 +13,8 @@ import {
   ArrowRight,
   ShieldCheck,
   FileText,
-  Loader2
+  Loader2,
+  Star
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
@@ -21,6 +22,7 @@ import { storageService } from '../../services/storageService';
 import { Order, Product } from '../../types';
 import { bangladeshDivisions } from '../../data/bangladeshLocations';
 import { formatAuthError } from '../../utils/authErrors';
+import { ReviewModal } from '../products/ReviewModal';
 
 interface CustomerDashboardProps {
   initialTab?: 'orders' | 'profile' | 'wishlist';
@@ -105,6 +107,46 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
       unsub();
     };
   }, [user?.id]);
+
+  // Review modal state
+  const [reviewModalProduct, setReviewModalProduct] = useState<Product | null>(null);
+  const [reviewModalOrderId, setReviewModalOrderId] = useState<string>('');
+  const [reviewsVersion, setReviewsVersion] = useState(0);
+
+  useEffect(() => {
+    const unsub = storageService.subscribe(() => {
+      setReviewsVersion((v) => v + 1);
+    });
+    return unsub;
+  }, []);
+
+  const handleOpenReviewModal = (item: any, orderId: string) => {
+    const existingProduct = storageService.getProductById(item.productId);
+    const prod: Product = existingProduct || {
+      id: item.productId,
+      titleEn: item.titleEn,
+      titleBn: item.titleBn,
+      price: item.price,
+      images: [item.image],
+      category: 'men',
+      subCategory: 'panjabi',
+      fabric: '',
+      descriptionEn: '',
+      descriptionBn: '',
+      stock: 10,
+      sizes: [item.size],
+      colors: [],
+      rating: 5,
+      reviewCount: 0,
+      isFeatured: false,
+      isNewArrival: false,
+      isBestSeller: false,
+      sku: item.productId,
+      tags: [],
+    };
+    setReviewModalProduct(prod);
+    setReviewModalOrderId(orderId);
+  };
 
   const orders = customerOrders;
   const wishlistIds = storageService.getWishlist();
@@ -457,23 +499,54 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
                         {/* Items in order */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          {ord.items.map((item, idx) => (
-                            <div key={idx} className="flex items-center gap-3">
-                              <img
-                                src={item.image}
-                                alt={item.titleEn}
-                                className="w-12 h-14 object-cover rounded-lg border border-stone-200"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <h5 className="text-xs font-semibold text-stone-900 truncate">
-                                  {language === 'bn' ? item.titleBn : item.titleEn}
-                                </h5>
-                                <p className="text-[11px] text-stone-500">
-                                  Size: {item.size} • Qty: {item.quantity}
-                                </p>
+                          {ord.items.map((item, idx) => {
+                            const isDelivered = ord.orderStatus === 'delivered';
+                            const isReviewed = storageService.hasCustomerReviewed(user.id, item.productId, ord.id);
+
+                            return (
+                              <div key={idx} className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white border border-stone-200/80 shadow-2xs">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <img
+                                    src={item.image}
+                                    alt={item.titleEn}
+                                    className="w-12 h-14 object-cover rounded-lg border border-stone-200 shrink-0"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <h5 className="text-xs font-semibold text-stone-900 truncate">
+                                      {language === 'bn' ? item.titleBn : item.titleEn}
+                                    </h5>
+                                    <p className="text-[11px] text-stone-500">
+                                      Size: {item.size} • Qty: {item.quantity}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="shrink-0 text-right">
+                                  {isDelivered ? (
+                                    isReviewed ? (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold">
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                        <span>{language === 'bn' ? 'রিভিউ সম্পন্ন' : 'Reviewed'}</span>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenReviewModal(item, ord.id)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-bold shadow-xs transition-all cursor-pointer"
+                                      >
+                                        <Star className="w-3 h-3 fill-white text-white" />
+                                        <span>{language === 'bn' ? 'রিভিউ দিন' : 'Write Review'}</span>
+                                      </button>
+                                    )
+                                  ) : (
+                                    <span className="text-[10px] text-stone-400 italic">
+                                      {language === 'bn' ? 'ডেলিভারির পর রিভিউ' : 'Review on delivery'}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
 
                         {/* Action buttons */}
@@ -689,6 +762,20 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Review Modal */}
+      {reviewModalProduct && (
+        <ReviewModal
+          isOpen={Boolean(reviewModalProduct)}
+          onClose={() => setReviewModalProduct(null)}
+          product={reviewModalProduct}
+          orderId={reviewModalOrderId}
+          onSuccess={() => {
+            setReviewsVersion((v) => v + 1);
+          }}
+          onToast={onToast}
+        />
+      )}
     </div>
   );
 };

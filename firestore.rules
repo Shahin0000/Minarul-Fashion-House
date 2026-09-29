@@ -83,11 +83,41 @@ service cloud.firestore {
     }
 
     // ----------------- REVIEWS COLLECTION -----------------
-    // Public can read reviews; Anyone can submit a review; Admin can manage
+    // Public can read published reviews; Admin can read all; Customer can read their own
     match /reviews/{reviewId} {
-      allow read: if true;
-      allow create: if true;
-      allow update, delete: if isAdmin();
+      allow read: if resource == null 
+                  || resource.data.status == "published" 
+                  || !('status' in resource.data) 
+                  || isAdmin() 
+                  || (isSignedIn() && resource.data.customerId == request.auth.uid);
+
+      // Customer can create review if signed in and customerId matches UID
+      allow create: if isSignedIn() && (
+        isAdmin() || (
+          request.resource.data.customerId == request.auth.uid &&
+          request.resource.data.rating >= 1 && request.resource.data.rating <= 5 &&
+          (request.resource.data.status == 'published' || request.resource.data.status == 'pending')
+        )
+      );
+
+      // Customer can update their own review (e.g. comment/rating/photos) or Admin can moderate
+      allow update: if isSignedIn() && (
+        isAdmin() || (
+          isOwner(resource.data.customerId) &&
+          request.resource.data.customerId == resource.data.customerId &&
+          request.resource.data.status == resource.data.status
+        )
+      );
+
+      // Only Admin or review author can delete
+      allow delete: if isAdmin() || (isSignedIn() && isOwner(resource.data.customerId));
+    }
+
+    // ----------------- REVIEW REPORTS COLLECTION -----------------
+    // Customers can submit reports on inappropriate reviews; Admin can view/manage
+    match /reviewReports/{reportId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if isAdmin();
     }
 
     // ----------------- SETTINGS COLLECTION -----------------

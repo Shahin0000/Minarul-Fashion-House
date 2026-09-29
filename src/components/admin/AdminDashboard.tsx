@@ -31,11 +31,16 @@ import {
   Filter,
   Eye,
   Upload,
-  Users as UsersIcon
+  Users as UsersIcon,
+  Loader2,
+  Star,
+  EyeOff,
+  Flag
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 import { storageService } from '../../services/storageService';
+import { settingsService, EMPTY_WEBSITE_SETTINGS, EMPTY_PAYMENT_SETTINGS, EMPTY_LOGISTICS_SETTINGS } from '../../services/settingsService';
 import { 
   Order, 
   Product, 
@@ -45,14 +50,19 @@ import {
   CategoryType, 
   SubCategoryType,
   SiteSettings,
+  WebsiteSettings,
+  PaymentSettings,
+  LogisticsSettings,
   HeroSlide,
   Review,
+  ReviewReport,
   ProductColor,
   User
 } from '../../types';
 import { formatAuthError } from '../../utils/authErrors';
 import { app, db } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
+import { ImageLightboxModal } from '../common/ImageLightboxModal';
 import { bangladeshDivisions, allBangladeshDistricts, normalizeDistrictName, FlatDistrict } from '../../data/bangladeshLocations';
 
 interface AdminDashboardProps {
@@ -153,7 +163,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [coupons, setCoupons] = useState<Coupon[]>(() => storageService.getCoupons());
   const [slides, setSlides] = useState<HeroSlide[]>(() => storageService.getHeroSlides());
   const [settings, setSettings] = useState<SiteSettings>(() => storageService.getSettings());
-  const [reviews, setReviews] = useState<Review[]>(() => storageService.getReviews());
+  const [reviews, setReviews] = useState<Review[]>(() => storageService.getAllReviewsForAdmin());
   const [users, setUsers] = useState<User[]>(() => storageService.getUsers());
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
@@ -231,7 +241,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setCoupons(storageService.getCoupons());
       setSlides(storageService.getHeroSlides());
       setSettings(storageService.getSettings());
-      setReviews(storageService.getReviews());
+      setReviews(storageService.getAllReviewsForAdmin());
       setUsers(storageService.getUsers());
     });
     return unsub;
@@ -927,35 +937,194 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // =========================================================================
-  // 5. REVIEWS HANDLERS
+  // 5. REVIEWS HANDLERS & MODERATION
   // =========================================================================
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'published' | 'pending' | 'hidden' | 'reported'>('all');
+  const [reviewReports, setReviewReports] = useState<ReviewReport[]>([]);
+  const [reviewLightboxUrl, setReviewLightboxUrl] = useState<string>('');
+  const [reviewLightboxTitle, setReviewLightboxTitle] = useState<string>('');
+
+  useEffect(() => {
+    if (isAdmin && activeTab === 'reviews') {
+      storageService.getReviewReports().then(setReviewReports).catch(() => {});
+    }
+  }, [isAdmin, activeTab]);
+
+  const handlePublishReview = async (rev: Review) => {
+    try {
+      await storageService.updateReviewStatus(rev.id, 'published');
+      onToast(language === 'bn' ? 'রিভিউটি পাবলিশ করা হয়েছে' : 'Review published', 'success');
+    } catch {
+      onToast('Failed to update review status', 'error');
+    }
+  };
+
+  const handleHideReview = async (rev: Review) => {
+    try {
+      await storageService.updateReviewStatus(rev.id, 'hidden');
+      onToast(language === 'bn' ? 'রিভিউটি হাইড করা হয়েছে' : 'Review hidden', 'info');
+    } catch {
+      onToast('Failed to hide review', 'error');
+    }
+  };
+
   const handleDeleteReviewClick = (rev: Review) => {
     openConfirmDialog(
-      'Delete Review?',
-      `Are you sure you want to delete review by "${rev.userName}"?`,
-      () => {
-        storageService.deleteReview(rev.id);
-        onToast('Review removed', 'info');
+      language === 'bn' ? 'রিভিউ মুছে ফেলবেন?' : 'Delete Review?',
+      language === 'bn'
+        ? `আপনি কি নিশ্চিত যে "${rev.customerName || rev.userName}"-এর রিভিউটি স্থায়ীভাবে মুছে ফেলতে চান?`
+        : `Are you sure you want to permanently delete review by "${rev.customerName || rev.userName}"?`,
+      async () => {
+        try {
+          await storageService.deleteReview(rev.id);
+          onToast(language === 'bn' ? 'রিভিউ মুছে ফেলা হয়েছে' : 'Review removed', 'info');
+        } catch {
+          onToast('Failed to delete review', 'error');
+        }
       }
     );
   };
 
   // =========================================================================
-  // 6. STORE SETTINGS STATE & HANDLERS
+  // 6. STORE SETTINGS STATE & HANDLERS (PRIMARY SOURCE OF TRUTH: FIRESTORE)
   // =========================================================================
-  const [settingsForm, setSettingsForm] = useState<SiteSettings>(settings);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsActiveSection, setSettingsActiveSection] = useState<'website' | 'payment' | 'logistics'>('website');
+  const [websiteForm, setWebsiteForm] = useState<WebsiteSettings>(() => EMPTY_WEBSITE_SETTINGS);
+  const [paymentForm, setPaymentForm] = useState<PaymentSettings>(() => EMPTY_PAYMENT_SETTINGS);
+  const [logisticsForm, setLogisticsForm] = useState<LogisticsSettings>(() => EMPTY_LOGISTICS_SETTINGS);
 
+  const [isSavingWebsite, setIsSavingWebsite] = useState(false);
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+  const [isSavingLogistics, setIsSavingLogistics] = useState(false);
+  const [isSavingAll, setIsSavingAll] = useState(false);
+
+  // Load latest settings strictly from Firestore upon opening / authentication
   useEffect(() => {
-    setSettingsForm(settings);
-  }, [settings]);
+    if (!isAdmin) return;
+    let isMounted = true;
+    setSettingsLoading(true);
 
-  const handleSaveSettings = (e: React.FormEvent) => {
+    Promise.all([
+      settingsService.getWebsiteSettings(true),
+      settingsService.getPaymentSettings(true),
+      settingsService.getLogisticsSettings(true),
+    ])
+      .then(([web, pay, log]) => {
+        if (isMounted) {
+          setWebsiteForm(web);
+          setPaymentForm(pay);
+          setLogisticsForm(log);
+          setSettingsLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          console.error('Settings load error from Firestore:', err);
+          onToast(err?.message || 'Settings লোড করতে সমস্যা হয়েছে', 'error');
+          setSettingsLoading(false);
+        }
+      });
+
+    // Real-time synchronization
+    const unsub = settingsService.subscribe(() => {
+      if (isMounted) {
+        setWebsiteForm(settingsService.getCachedWebsiteSettings());
+        setPaymentForm(settingsService.getCachedPaymentSettings());
+        setLogisticsForm(settingsService.getCachedLogisticsSettings());
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, [isAdmin]);
+
+  // Section 1: Save Website Settings (settings/website)
+  const handleSaveWebsite = async (e: React.FormEvent) => {
     e.preventDefault();
-    storageService.saveSettings(settingsForm);
-    onToast(
-      language === 'bn' ? 'ওয়েবসাইট সেটিংস সফলভাবে সংরক্ষিত হয়েছে!' : 'Website settings updated successfully!',
-      'success'
-    );
+    if (isSavingWebsite || isSavingAll) return;
+    try {
+      setIsSavingWebsite(true);
+      const verified = await settingsService.saveWebsiteSettings(websiteForm);
+      setWebsiteForm(verified);
+      onToast(
+        language === 'bn' ? 'ওয়েবসাইট সেটিংস সফলভাবে সংরক্ষিত হয়েছে!' : 'Website settings saved & verified!',
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Failed to save website settings:', err);
+      onToast(err?.message || 'Website settings সংরক্ষণ ব্যর্থ হয়েছে', 'error');
+    } finally {
+      setIsSavingWebsite(false);
+    }
+  };
+
+  // Section 2: Save Payment Settings (settings/payment)
+  const handleSavePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingPayment || isSavingAll) return;
+    try {
+      setIsSavingPayment(true);
+      const verified = await settingsService.savePaymentSettings(paymentForm);
+      setPaymentForm(verified);
+      onToast(
+        language === 'bn' ? 'পেমেন্ট মার্চেন্ট নম্বর সফলভাবে সংরক্ষিত হয়েছে!' : 'Payment accounts saved & verified!',
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Failed to save payment settings:', err);
+      onToast(err?.message || 'Payment settings সংরক্ষণ ব্যর্থ হয়েছে', 'error');
+    } finally {
+      setIsSavingPayment(false);
+    }
+  };
+
+  // Section 3: Save Logistics Settings (settings/logistics)
+  const handleSaveLogistics = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingLogistics || isSavingAll) return;
+    try {
+      setIsSavingLogistics(true);
+      const verified = await settingsService.saveLogisticsSettings(logisticsForm);
+      setLogisticsForm(verified);
+      onToast(
+        language === 'bn' ? 'লজিস্টিকস ও ডেলিভারি সেটিংস সফলভাবে সংরক্ষিত হয়েছে!' : 'Logistics settings saved & verified!',
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Failed to save logistics settings:', err);
+      onToast(err?.message || 'Logistics settings সংরক্ষণ ব্যর্থ হয়েছে', 'error');
+    } finally {
+      setIsSavingLogistics(false);
+    }
+  };
+
+  // Save All Settings
+  const handleSaveAllSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingAll) return;
+    try {
+      setIsSavingAll(true);
+      const [vWeb, vPay, vLog] = await Promise.all([
+        settingsService.saveWebsiteSettings(websiteForm),
+        settingsService.savePaymentSettings(paymentForm),
+        settingsService.saveLogisticsSettings(logisticsForm),
+      ]);
+      setWebsiteForm(vWeb);
+      setPaymentForm(vPay);
+      setLogisticsForm(vLog);
+      onToast(
+        language === 'bn' ? 'সকল সেটিংস সফলভাবে Firestore-এ সংরক্ষিত হয়েছে!' : 'All settings saved & verified in Firestore!',
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Failed to save all settings:', err);
+      onToast(err?.message || 'সেটিংস সংরক্ষণ ব্যর্থ হয়েছে', 'error');
+    } finally {
+      setIsSavingAll(false);
+    }
   };
 
   const handleResetDataClick = () => {
@@ -2092,258 +2261,870 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 6: CUSTOMER REVIEWS */}
+        {/* TAB 6: CUSTOMER REVIEWS & MODERATION */}
         {/* ========================================================================= */}
-        {activeTab === 'reviews' && (
-          <div className="bg-white rounded-3xl border border-stone-200 p-6 shadow-xs space-y-5">
-            <div className="pb-3 border-b border-stone-100">
-              <h3 className="font-serif text-lg font-bold text-stone-900">
-                Customer Reviews Moderation ({reviews.length})
-              </h3>
-              <p className="text-xs text-stone-500">
-                View buyer ratings, delete spam or unverified comments
-              </p>
-            </div>
+        {activeTab === 'reviews' && (() => {
+          const publishedCount = reviews.filter((r) => r.status === 'published' || !r.status).length;
+          const pendingCount = reviews.filter((r) => r.status === 'pending').length;
+          const hiddenCount = reviews.filter((r) => r.status === 'hidden').length;
+          const reportedReviewIds = new Set(reviewReports.map((rp) => rp.reviewId));
+          const reportedCount = reviews.filter((r) => reportedReviewIds.has(r.id)).length;
+          
+          const totalRatingSum = reviews.reduce((sum, r) => sum + r.rating, 0);
+          const overallAvgRating = reviews.length > 0 ? (totalRatingSum / reviews.length).toFixed(1) : '5.0';
 
-            <div className="divide-y divide-stone-100 text-xs">
-              {reviews.map((rev) => (
-                <div key={rev.id} className="py-4 flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-stone-900">{rev.userName}</span>
-                      <span className="text-amber-500 font-bold">★ {rev.rating}/5</span>
-                      {rev.verifiedPurchase && (
-                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold">
-                          Verified
-                        </span>
-                      )}
-                      <span className="text-stone-400 text-[10px]">{rev.date}</span>
-                    </div>
-                    <p className="text-stone-700 leading-relaxed max-w-2xl">{rev.comment}</p>
-                    <span className="text-[10px] text-stone-400">Product ID: {rev.productId}</span>
-                  </div>
+          const filteredReviews = reviews.filter((rev) => {
+            if (reviewFilter === 'published') return rev.status === 'published' || !rev.status;
+            if (reviewFilter === 'pending') return rev.status === 'pending';
+            if (reviewFilter === 'hidden') return rev.status === 'hidden';
+            if (reviewFilter === 'reported') return reportedReviewIds.has(rev.id);
+            return true;
+          });
 
-                  <button
-                    onClick={() => handleDeleteReviewClick(rev)}
-                    className="p-1.5 rounded-lg border border-stone-200 text-stone-400 hover:text-rose-600 transition-colors"
-                    title="Delete Review"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+          return (
+            <div className="bg-white rounded-3xl border border-stone-200 p-6 sm:p-8 shadow-xs space-y-6">
+              
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-stone-100 gap-3">
+                <div>
+                  <h3 className="font-serif text-xl font-bold text-stone-900">
+                    Customer Reviews & Rating Moderation ({reviews.length})
+                  </h3>
+                  <p className="text-xs text-stone-500">
+                    Moderate verified buyer feedback, customer product photos, and customer ratings
+                  </p>
                 </div>
-              ))}
+              </div>
+
+              {/* Summary Stats Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className="p-3.5 rounded-2xl bg-stone-50 border border-stone-200 text-center">
+                  <span className="text-[10px] uppercase font-bold text-stone-500 block">Total</span>
+                  <span className="text-lg font-bold text-stone-900 font-mono">{reviews.length}</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-center">
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 block">Published</span>
+                  <span className="text-lg font-bold text-emerald-900 font-mono">{publishedCount}</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-center">
+                  <span className="text-[10px] uppercase font-bold text-amber-700 block">Pending</span>
+                  <span className="text-lg font-bold text-amber-900 font-mono">{pendingCount}</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-stone-100 border border-stone-300 text-center">
+                  <span className="text-[10px] uppercase font-bold text-stone-600 block">Hidden</span>
+                  <span className="text-lg font-bold text-stone-700 font-mono">{hiddenCount}</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-center">
+                  <span className="text-[10px] uppercase font-bold text-rose-700 block">Reported</span>
+                  <span className="text-lg font-bold text-rose-900 font-mono">{reportedCount}</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-center">
+                  <span className="text-[10px] uppercase font-bold text-amber-800 block">Avg Rating</span>
+                  <span className="text-lg font-bold text-amber-900 font-mono flex items-center justify-center gap-1">
+                    <Star className="w-4 h-4 fill-amber-500 text-amber-500 inline" />
+                    <span>{overallAvgRating}</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Filter Tabs */}
+              <div className="flex flex-wrap items-center gap-2 pt-1 border-b border-stone-100 pb-3">
+                {[
+                  { key: 'all', label: 'All Reviews', count: reviews.length },
+                  { key: 'published', label: 'Published', count: publishedCount },
+                  { key: 'pending', label: 'Pending', count: pendingCount },
+                  { key: 'hidden', label: 'Hidden', count: hiddenCount },
+                  { key: 'reported', label: 'Reported', count: reportedCount },
+                ].map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setReviewFilter(tab.key as any)}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      reviewFilter === tab.key
+                        ? 'bg-stone-900 text-white shadow-xs'
+                        : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                      reviewFilter === tab.key ? 'bg-white/20 text-white' : 'bg-stone-200 text-stone-700'
+                    }`}>
+                      {tab.count}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Reviews List */}
+              <div className="space-y-4">
+                {filteredReviews.length === 0 ? (
+                  <div className="text-center py-12 text-stone-400 text-xs">
+                    No reviews found matching the selected filter ({reviewFilter}).
+                  </div>
+                ) : (
+                  filteredReviews.map((rev) => {
+                    const matchedProduct = products.find((p) => p.id === rev.productId);
+                    const photos = rev.reviewImages && rev.reviewImages.length > 0 
+                      ? rev.reviewImages 
+                      : rev.reviewImage ? [rev.reviewImage] : [];
+                    const isReported = reportedReviewIds.has(rev.id);
+                    const currentStatus = rev.status || 'published';
+
+                    return (
+                      <div
+                        key={rev.id}
+                        className="p-5 rounded-2xl border border-stone-200 bg-stone-50/50 hover:bg-white hover:border-stone-300 transition-all space-y-3.5 shadow-2xs"
+                      >
+                        {/* Top row: Customer, Rating, Badges, Moderation actions */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-stone-200/60">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-stone-900 text-sm">
+                                {rev.customerName || rev.userName}
+                              </span>
+                              {rev.customerEmail && (
+                                <span className="text-xs text-stone-500">
+                                  ({rev.customerEmail})
+                                </span>
+                              )}
+                              {rev.verifiedPurchase && (
+                                <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                  <span>Verified Buyer</span>
+                                </span>
+                              )}
+                              {isReported && (
+                                <span className="inline-flex items-center gap-1 text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-bold">
+                                  <Flag className="w-3 h-3 text-rose-600" />
+                                  <span>Reported</span>
+                                </span>
+                              )}
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                                currentStatus === 'published'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : currentStatus === 'pending'
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : 'bg-stone-200 text-stone-700'
+                              }`}>
+                                {currentStatus}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2 text-[11px] text-stone-400">
+                              <span>Date: <strong className="text-stone-600">{rev.date}</strong></span>
+                              {rev.orderId && (
+                                <>
+                                  <span>•</span>
+                                  <span>Order: <strong className="font-mono text-stone-700">{rev.orderId}</strong></span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Moderation Action Buttons */}
+                          <div className="flex items-center gap-2">
+                            {currentStatus !== 'published' && (
+                              <button
+                                type="button"
+                                onClick={() => handlePublishReview(rev)}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Publish</span>
+                              </button>
+                            )}
+
+                            {currentStatus === 'published' && (
+                              <button
+                                type="button"
+                                onClick={() => handleHideReview(rev)}
+                                className="px-3 py-1.5 rounded-xl bg-stone-200 hover:bg-stone-300 text-stone-700 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                              >
+                                <EyeOff className="w-3.5 h-3.5" />
+                                <span>Hide</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteReviewClick(rev)}
+                              className="p-1.5 rounded-xl border border-stone-200 text-stone-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                              title="Delete Review Permanently"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Product reference & Stars */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                          {matchedProduct ? (
+                            <div className="flex items-center gap-2.5">
+                              <img
+                                src={matchedProduct.images[0] || ''}
+                                alt={matchedProduct.titleEn}
+                                className="w-9 h-11 object-cover rounded-lg border border-stone-200 shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <h5 className="font-bold text-stone-900 truncate">
+                                  {language === 'bn' ? matchedProduct.titleBn : matchedProduct.titleEn}
+                                </h5>
+                                <span className="text-[10px] font-mono text-stone-400">
+                                  Code: {matchedProduct.id} • {matchedProduct.category}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-stone-400 text-xs font-mono">
+                              Product ID: {rev.productId}
+                            </span>
+                          )}
+
+                          {/* Star Rating */}
+                          <div className="flex items-center gap-1.5 bg-amber-50 px-2.5 py-1 rounded-xl border border-amber-200/60 self-start sm:self-center">
+                            <div className="flex gap-0.5 text-amber-400">
+                              {[...Array(5)].map((_, i) => (
+                                <Star
+                                  key={i}
+                                  className={`w-3.5 h-3.5 ${
+                                    i < rev.rating ? 'fill-amber-400 text-amber-400' : 'text-stone-300'
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                            <span className="font-bold text-amber-900 text-xs font-mono">
+                              {rev.rating}.0 / 5.0
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Review text */}
+                        <p className="text-xs text-stone-800 leading-relaxed bg-white p-3 rounded-xl border border-stone-200/70">
+                          {rev.reviewText || rev.comment}
+                        </p>
+
+                        {/* Customer Uploaded Photos */}
+                        {photos.length > 0 && (
+                          <div className="space-y-1.5 pt-1">
+                            <span className="text-[10px] uppercase font-bold text-stone-500 block">
+                              Customer Photos ({photos.length}):
+                            </span>
+                            <div className="flex flex-wrap gap-2">
+                              {photos.map((imgUrl, pIdx) => (
+                                <button
+                                  key={pIdx}
+                                  type="button"
+                                  onClick={() => {
+                                    setReviewLightboxUrl(imgUrl);
+                                    setReviewLightboxTitle(
+                                      `Review by ${rev.customerName || rev.userName} (${matchedProduct?.titleEn || rev.productId})`
+                                    );
+                                  }}
+                                  className="relative w-16 h-16 rounded-xl overflow-hidden border border-stone-300 hover:border-amber-600 bg-stone-100 hover:opacity-90 hover:scale-105 transition-all shadow-2xs group cursor-pointer"
+                                >
+                                  <img
+                                    src={imgUrl}
+                                    alt="Review uploaded photo"
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                    <ImageIcon className="w-4 h-4 text-white" />
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ========================================================================= */}
-        {/* TAB 7: SITE SETTINGS & PAYMENT GATEWAYS */}
+        {/* TAB 7: SITE SETTINGS & PAYMENT GATEWAYS (PRIMARY SOURCE: FIRESTORE) */}
         {/* ========================================================================= */}
         {activeTab === 'settings' && (
           <div className="bg-white rounded-3xl border border-stone-200 p-6 sm:p-8 shadow-xs space-y-6">
-            <div className="pb-4 border-b border-stone-100">
-              <h3 className="font-serif text-xl font-bold text-stone-900">
-                {language === 'bn' ? 'ওয়েবসাইট, পেমেন্ট নম্বর ও লজিস্টিকস সেটিংস' : 'Website & Payment Configuration'}
-              </h3>
-              <p className="text-xs text-stone-500">
-                {language === 'bn'
-                  ? 'আপনার বিকাশ, নগদ, রকেট মার্চেন্ট নম্বর এবং ডেলিভারি ফি আপডেট করুন'
-                  : 'Customize top bar announcement, helpline numbers, bKash/Nagad accounts & shipping fees'}
-              </p>
-            </div>
-
-            <form onSubmit={handleSaveSettings} className="space-y-6 text-xs">
-              {/* Payment Merchant Numbers Section */}
-              <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
-                <h4 className="font-bold text-sm text-stone-900 flex items-center gap-2">
-                  <DollarSign className="w-4 h-4 text-emerald-700" />
-                  <span>{language === 'bn' ? 'মার্চেন্ট পেমেন্ট নম্বর সমূহ' : 'Payment Accounts & Mobile Numbers'}</span>
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block font-bold text-pink-700 mb-1">
-                      bKash (বিকাশ) Merchant Number *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={settingsForm.bkashMerchantNumber}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, bkashMerchantNumber: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-orange-700 mb-1">
-                      Nagad (নগদ) Merchant Number *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={settingsForm.nagadMerchantNumber}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, nagadMerchantNumber: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-purple-700 mb-1">
-                      Rocket (রকেট) Account Number *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={settingsForm.rocketMerchantNumber}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, rocketMerchantNumber: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
-                    />
-                  </div>
-                </div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-stone-100 gap-3">
+              <div>
+                <h3 className="font-serif text-xl font-bold text-stone-900">
+                  {language === 'bn' ? 'ওয়েবসাইট, পেমেন্ট নম্বর ও লজিস্টিকস সেটিংস' : 'Website, Payment & Logistics Configuration'}
+                </h3>
+                <p className="text-xs text-stone-500">
+                  {language === 'bn'
+                    ? 'Firestore-এর settings/website, settings/payment এবং settings/logistics ডকুমেন্ট থেকে সরাসরি সংরক্ষিত ও আপডেট হয়।'
+                    : 'Directly synchronized with Firestore settings/website, settings/payment, and settings/logistics documents.'}
+                </p>
               </div>
 
-              {/* Delivery Fees & Threshold Section */}
-              <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
-                <h4 className="font-bold text-sm text-stone-900 flex items-center gap-2">
-                  <Truck className="w-4 h-4 text-amber-700" />
-                  <span>{language === 'bn' ? 'ডেলিভারি ফি ও ফ্রি শিপিং' : 'Delivery Charges (BDT)'}</span>
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">
-                      Inside Dhaka Delivery (৳) *
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      value={settingsForm.dhakaDeliveryFee}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          dhakaDeliveryFee: Number(e.target.value),
-                        })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">
-                      Outside Dhaka Delivery (৳) *
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      value={settingsForm.outsideDhakaDeliveryFee}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          outsideDhakaDeliveryFee: Number(e.target.value),
-                        })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">
-                      Free Shipping Min. Order (৳) *
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      value={settingsForm.freeShippingThreshold}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          freeShippingThreshold: Number(e.target.value),
-                        })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Announcement Bar & Hotline */}
-              <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
-                <h4 className="font-bold text-sm text-stone-900 flex items-center gap-2">
-                  <Phone className="w-4 h-4 text-blue-700" />
-                  <span>Top Bar Announcement & Contacts</span>
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">
-                      Announcement Ticker (Bangla)
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsForm.announcementBn}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, announcementBn: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">
-                      Announcement Ticker (English)
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsForm.announcementEn}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, announcementEn: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">Hotline Number</label>
-                    <input
-                      type="text"
-                      value={settingsForm.hotline}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, hotline: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-stone-700 mb-1">WhatsApp Helpline</label>
-                    <input
-                      type="text"
-                      value={settingsForm.whatsapp}
-                      onChange={(e) =>
-                        setSettingsForm({ ...settingsForm, whatsapp: e.target.value })
-                      }
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-2">
+              {/* Sub-tab navigation */}
+              <div className="flex items-center gap-1.5 p-1 bg-stone-100 rounded-xl self-start sm:self-auto text-xs font-semibold">
                 <button
-                  type="submit"
-                  className="px-8 py-3 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-bold transition-colors shadow-md flex items-center gap-2"
+                  type="button"
+                  onClick={() => setSettingsActiveSection('website')}
+                  className={`px-3 py-1.5 rounded-lg transition-all ${
+                    settingsActiveSection === 'website'
+                      ? 'bg-white text-stone-900 shadow-xs font-bold'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
                 >
-                  <Check className="w-4 h-4" />
-                  <span>{language === 'bn' ? 'সেটিংস সংরক্ষণ করুন' : 'Save All Settings'}</span>
+                  🌐 {language === 'bn' ? 'ওয়েবসাইট' : 'Website'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettingsActiveSection('payment')}
+                  className={`px-3 py-1.5 rounded-lg transition-all ${
+                    settingsActiveSection === 'payment'
+                      ? 'bg-white text-stone-900 shadow-xs font-bold'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  💳 {language === 'bn' ? 'পেমেন্ট নম্বর' : 'Payments'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettingsActiveSection('logistics')}
+                  className={`px-3 py-1.5 rounded-lg transition-all ${
+                    settingsActiveSection === 'logistics'
+                      ? 'bg-white text-stone-900 shadow-xs font-bold'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  🚚 {language === 'bn' ? 'লজিস্টিকস ও কুরিয়ার' : 'Logistics'}
                 </button>
               </div>
-            </form>
+            </div>
+
+            {/* Loading Indicator */}
+            {settingsLoading ? (
+              <div className="flex flex-col items-center justify-center p-12 space-y-3">
+                <Loader2 className="w-8 h-8 text-amber-700 animate-spin" />
+                <p className="text-xs font-semibold text-stone-600">
+                  {language === 'bn' ? 'Firestore থেকে সেটিংস লোড হচ্ছে...' : 'Loading settings from Firestore...'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* ------------------------------------------------------------- */}
+                {/* SECTION 1: WEBSITE SETTINGS (settings/website) */}
+                {/* ------------------------------------------------------------- */}
+                {settingsActiveSection === 'website' && (
+                  <form onSubmit={handleSaveWebsite} className="space-y-5 text-xs">
+                    <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-stone-900 flex items-center gap-2">
+                          <Settings className="w-4 h-4 text-amber-700" />
+                          <span>{language === 'bn' ? 'সাধারণ ওয়েবসাইট সেটিংস (settings/website)' : 'Website Identity & Basic Details'}</span>
+                        </h4>
+                        <span className="text-[11px] font-mono text-stone-500">Firestore: settings/website</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="sm:col-span-2">
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'ওয়েবসাইটের নাম (Site Name) *' : 'Site Name *'}
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={websiteForm.siteName}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, siteName: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-bold"
+                            placeholder="MINARUL FASHION HOUSE"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'ওয়েবসাইট বিবরণ (Description)' : 'Site Description'}
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={websiteForm.siteDescription}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, siteDescription: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                            placeholder="Short description of your fashion brand..."
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'লোগো ইমেজ লিঙ্ক (Logo URL)' : 'Logo Image URL'}
+                          </label>
+                          <input
+                            type="url"
+                            value={websiteForm.logo}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, logo: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono"
+                            placeholder="https://.../logo.png"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'হটলাইন ফোন নম্বর (Phone)' : 'Hotline Phone'}
+                          </label>
+                          <input
+                            type="text"
+                            value={websiteForm.phone}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, phone: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono"
+                            placeholder="+880 1712-345678"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'হোয়াটসঅ্যাপ নম্বর (WhatsApp)' : 'WhatsApp Number'}
+                          </label>
+                          <input
+                            type="text"
+                            value={websiteForm.whatsapp}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, whatsapp: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono"
+                            placeholder="+880 1712-345678"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'সাপোর্ট ইমেইল (Email)' : 'Support Email'}
+                          </label>
+                          <input
+                            type="email"
+                            value={websiteForm.email}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, email: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                            placeholder="support@minarulfashion.com"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'শোরুম / স্টোর ঠিকানা (Address)' : 'Store Address'}
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={websiteForm.address}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, address: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                            placeholder="লেভেল ৩, শপিং কমপ্লেক্স, ধানমন্ডি ২৭, ঢাকা-১২০৯"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            Facebook Page Link
+                          </label>
+                          <input
+                            type="text"
+                            value={websiteForm.facebook}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, facebook: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                            placeholder="https://facebook.com/minarulfashion"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            Instagram Profile Link
+                          </label>
+                          <input
+                            type="text"
+                            value={websiteForm.instagram}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, instagram: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                            placeholder="https://instagram.com/minarulfashion"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'টপ বার ঘোষণা (বাংলা)' : 'Announcement Ticker (Bangla)'}
+                          </label>
+                          <input
+                            type="text"
+                            value={websiteForm.announcementBn || ''}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, announcementBn: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'টপ বার ঘোষণা (English)' : 'Announcement Ticker (English)'}
+                          </label>
+                          <input
+                            type="text"
+                            value={websiteForm.announcementEn || ''}
+                            onChange={(e) => setWebsiteForm({ ...websiteForm, announcementEn: e.target.value })}
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="submit"
+                        disabled={isSavingWebsite}
+                        className="px-6 py-2.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 disabled:opacity-60 cursor-pointer"
+                      >
+                        {isSavingWebsite ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>{language === 'bn' ? 'সংরক্ষণ করা হচ্ছে...' : 'Saving to Firestore...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>{language === 'bn' ? 'ওয়েবসাইট সেটিংস সেভ করুন' : 'Save Website Settings'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* ------------------------------------------------------------- */}
+                {/* SECTION 2: PAYMENT SETTINGS (settings/payment) */}
+                {/* ------------------------------------------------------------- */}
+                {settingsActiveSection === 'payment' && (
+                  <form onSubmit={handleSavePayment} className="space-y-5 text-xs">
+                    <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-stone-900 flex items-center gap-2">
+                          <DollarSign className="w-4 h-4 text-emerald-700" />
+                          <span>{language === 'bn' ? 'পেমেন্ট মার্চেন্ট নম্বর সমূহ (settings/payment)' : 'Merchant Payment Accounts'}</span>
+                        </h4>
+                        <span className="text-[11px] font-mono text-stone-500">Firestore: settings/payment</span>
+                      </div>
+
+                      <div className="p-3 bg-amber-50 text-amber-900 rounded-xl text-xs border border-amber-200/80 leading-relaxed">
+                        ⚠️ <strong>{language === 'bn' ? 'গুরুত্বপূর্ণ নিয়ম:' : 'Important Rule:'}</strong>{' '}
+                        {language === 'bn'
+                          ? 'এখানে যে নম্বরটি দিবেন সেটাই ওয়েবসাইটে চেকআউটে প্রদর্শিত হবে। কোনো নম্বর ফাঁকা রাখলে চেকআউটে কোনো ডিফল্ট বা ভুয়া নম্বর আসবে না।'
+                          : 'Numbers saved here are the primary source of truth for the entire website. If left blank, no fake default number will be displayed at checkout.'}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+                        {/* bKash */}
+                        <div className="p-4 bg-white rounded-xl border border-pink-200 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-pink-700">🌸 bKash (বিকাশ)</span>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
+                              <input
+                                type="checkbox"
+                                checked={paymentForm.bkash.enabled}
+                                onChange={(e) =>
+                                  setPaymentForm({
+                                    ...paymentForm,
+                                    bkash: { ...paymentForm.bkash, enabled: e.target.checked },
+                                  })
+                                }
+                                className="accent-pink-600 rounded"
+                              />
+                              <span className="text-stone-600">{paymentForm.bkash.enabled ? 'Active' : 'Disabled'}</span>
+                            </label>
+                          </div>
+                          <div>
+                            <label className="block text-stone-600 mb-1 font-semibold">
+                              Merchant / Personal Number:
+                            </label>
+                            <input
+                              type="text"
+                              value={paymentForm.bkash.number}
+                              onChange={(e) =>
+                                setPaymentForm({
+                                  ...paymentForm,
+                                  bkash: { ...paymentForm.bkash, number: e.target.value },
+                                })
+                              }
+                              placeholder="01XXXXXXXXX"
+                              className="w-full px-3 py-2 rounded-xl border border-stone-300 font-mono font-bold text-stone-900"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Nagad */}
+                        <div className="p-4 bg-white rounded-xl border border-orange-200 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-orange-700">🟠 Nagad (নগদ)</span>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
+                              <input
+                                type="checkbox"
+                                checked={paymentForm.nagad.enabled}
+                                onChange={(e) =>
+                                  setPaymentForm({
+                                    ...paymentForm,
+                                    nagad: { ...paymentForm.nagad, enabled: e.target.checked },
+                                  })
+                                }
+                                className="accent-orange-600 rounded"
+                              />
+                              <span className="text-stone-600">{paymentForm.nagad.enabled ? 'Active' : 'Disabled'}</span>
+                            </label>
+                          </div>
+                          <div>
+                            <label className="block text-stone-600 mb-1 font-semibold">
+                              Merchant / Personal Number:
+                            </label>
+                            <input
+                              type="text"
+                              value={paymentForm.nagad.number}
+                              onChange={(e) =>
+                                setPaymentForm({
+                                  ...paymentForm,
+                                  nagad: { ...paymentForm.nagad, number: e.target.value },
+                                })
+                              }
+                              placeholder="01XXXXXXXXX"
+                              className="w-full px-3 py-2 rounded-xl border border-stone-300 font-mono font-bold text-stone-900"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Rocket */}
+                        <div className="p-4 bg-white rounded-xl border border-purple-200 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-purple-700">🟣 Rocket (রকেট)</span>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
+                              <input
+                                type="checkbox"
+                                checked={paymentForm.rocket.enabled}
+                                onChange={(e) =>
+                                  setPaymentForm({
+                                    ...paymentForm,
+                                    rocket: { ...paymentForm.rocket, enabled: e.target.checked },
+                                  })
+                                }
+                                className="accent-purple-600 rounded"
+                              />
+                              <span className="text-stone-600">{paymentForm.rocket.enabled ? 'Active' : 'Disabled'}</span>
+                            </label>
+                          </div>
+                          <div>
+                            <label className="block text-stone-600 mb-1 font-semibold">
+                              Account Number:
+                            </label>
+                            <input
+                              type="text"
+                              value={paymentForm.rocket.number}
+                              onChange={(e) =>
+                                setPaymentForm({
+                                  ...paymentForm,
+                                  rocket: { ...paymentForm.rocket, number: e.target.value },
+                                })
+                              }
+                              placeholder="01XXXXXXXXX-X"
+                              className="w-full px-3 py-2 rounded-xl border border-stone-300 font-mono font-bold text-stone-900"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="submit"
+                        disabled={isSavingPayment}
+                        className="px-6 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 disabled:opacity-60 cursor-pointer"
+                      >
+                        {isSavingPayment ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>{language === 'bn' ? 'সংরক্ষণ করা হচ্ছে...' : 'Saving to Firestore...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>{language === 'bn' ? 'পেমেন্ট নম্বর সেভ করুন' : 'Save Payment Accounts'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* ------------------------------------------------------------- */}
+                {/* SECTION 3: LOGISTICS SETTINGS (settings/logistics) */}
+                {/* ------------------------------------------------------------- */}
+                {settingsActiveSection === 'logistics' && (
+                  <form onSubmit={handleSaveLogistics} className="space-y-5 text-xs">
+                    <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-stone-900 flex items-center gap-2">
+                          <Truck className="w-4 h-4 text-amber-700" />
+                          <span>{language === 'bn' ? 'ডেলিভারি ফি ও কুরিয়ার সেটিংস (settings/logistics)' : 'Logistics, Shipping Rates & Courier'}</span>
+                        </h4>
+                        <span className="text-[11px] font-mono text-stone-500">Firestore: settings/logistics</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'ঢাকার ভেতরে ডেলিভারি চার্জ (৳) *' : 'Inside Dhaka Delivery Charge (BDT) *'}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            required
+                            value={logisticsForm.deliveryChargeInsideDhaka}
+                            onChange={(e) =>
+                              setLogisticsForm({
+                                ...logisticsForm,
+                                deliveryChargeInsideDhaka: Number(e.target.value),
+                              })
+                            }
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'ঢাকার বাইরে ডেলিভারি চার্জ (৳) *' : 'Outside Dhaka Delivery Charge (BDT) *'}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            required
+                            value={logisticsForm.deliveryChargeOutsideDhaka}
+                            onChange={(e) =>
+                              setLogisticsForm({
+                                ...logisticsForm,
+                                deliveryChargeOutsideDhaka: Number(e.target.value),
+                              })
+                            }
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'ফ্রি শিপিং নূন্যতম অর্ডার (৳) *' : 'Free Shipping Minimum Order (BDT) *'}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            required
+                            value={logisticsForm.freeShippingThreshold}
+                            onChange={(e) =>
+                              setLogisticsForm({
+                                ...logisticsForm,
+                                freeShippingThreshold: Number(e.target.value),
+                              })
+                            }
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 font-mono font-bold"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="block font-bold text-stone-700 mb-1">
+                            {language === 'bn' ? 'ডিফল্ট কুরিয়ার পার্টনার (Default Courier)' : 'Default Courier Partner'}
+                          </label>
+                          <select
+                            value={logisticsForm.defaultCourier}
+                            onChange={(e) =>
+                              setLogisticsForm({ ...logisticsForm, defaultCourier: e.target.value })
+                            }
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 bg-white font-semibold"
+                          >
+                            <option value="Steadfast">Steadfast Courier</option>
+                            <option value="Pathao">Pathao Courier</option>
+                            <option value="RedX">RedX Logistics</option>
+                            <option value="Paperfly">Paperfly</option>
+                            <option value="Sundarban">Sundarban Courier</option>
+                            <option value="SA Paribahan">SA Paribahan</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Courier Services Active List */}
+                      <div className="pt-2">
+                        <label className="block font-bold text-stone-700 mb-2">
+                          {language === 'bn' ? 'সক্রিয় কুরিয়ার সার্ভিস সমূহ (Courier Services):' : 'Supported Courier Services:'}
+                        </label>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                          {logisticsForm.courierServices.map((c, idx) => (
+                            <label
+                              key={c.name}
+                              className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-colors ${
+                                c.enabled ? 'bg-amber-50/60 border-amber-300' : 'bg-white border-stone-200'
+                              }`}
+                            >
+                              <span className="font-semibold text-stone-800">{c.name}</span>
+                              <input
+                                type="checkbox"
+                                checked={c.enabled}
+                                onChange={(e) => {
+                                  const updated = [...logisticsForm.courierServices];
+                                  updated[idx] = { ...updated[idx], enabled: e.target.checked };
+                                  setLogisticsForm({ ...logisticsForm, courierServices: updated });
+                                }}
+                                className="accent-amber-600 rounded"
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="submit"
+                        disabled={isSavingLogistics}
+                        className="px-6 py-2.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 disabled:opacity-60 cursor-pointer"
+                      >
+                        {isSavingLogistics ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>{language === 'bn' ? 'সংরক্ষণ করা হচ্ছে...' : 'Saving to Firestore...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>{language === 'bn' ? 'লজিস্টিকস সেটিংস সেভ করুন' : 'Save Logistics Settings'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Save All Settings Global Bar */}
+                <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200 flex flex-col sm:flex-row items-center justify-between gap-3 pt-4">
+                  <div className="text-xs text-stone-600">
+                    💡 <strong>{language === 'bn' ? 'টিপ্স:' : 'Tip:'}</strong>{' '}
+                    {language === 'bn'
+                      ? 'যেকোনো একটি সেকশন অথবা এক ক্লিকে একবারে সব সেটিংস Firestore-এ সেভ করতে পারেন।'
+                      : 'You can save individual sections or click Save All to update all 3 documents simultaneously.'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveAllSettings}
+                    disabled={isSavingAll || isSavingWebsite || isSavingPayment || isSavingLogistics}
+                    className="px-7 py-3 bg-stone-900 hover:bg-black text-amber-300 rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 disabled:opacity-60 cursor-pointer whitespace-nowrap"
+                  >
+                    {isSavingAll ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                        <span>{language === 'bn' ? 'সব সেটিংস সেভ হচ্ছে...' : 'Saving All Settings...'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-4 h-4 text-emerald-400" />
+                        <span>{language === 'bn' ? 'এক ক্লিকে সব সেটিংস সংরক্ষণ করুন' : 'Save All Settings (Batch)'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3293,6 +4074,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Review Photo Lightbox Modal */}
+      <ImageLightboxModal
+        isOpen={Boolean(reviewLightboxUrl)}
+        onClose={() => setReviewLightboxUrl('')}
+        imageUrl={reviewLightboxUrl}
+        title={reviewLightboxTitle}
+      />
     </div>
   );
 };

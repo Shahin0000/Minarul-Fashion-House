@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   ArrowLeft, 
   ShieldCheck, 
@@ -18,8 +18,9 @@ import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 import { auth } from '../../firebase';
 import { bangladeshDivisions, calculateDeliveryFee } from '../../data/bangladeshLocations';
-import { Order, PaymentMethod, ShippingAddress } from '../../types';
+import { Order, PaymentMethod, ShippingAddress, PaymentSettings, LogisticsSettings } from '../../types';
 import { storageService } from '../../services/storageService';
+import { settingsService } from '../../services/settingsService';
 import { formatAuthError } from '../../utils/authErrors';
 import { PaymentModal } from './PaymentModal';
 
@@ -62,11 +63,43 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
     ) || bangladeshDivisions[0];
   }, [division]);
 
+  // Dynamic settings from Firestore (Source of Truth)
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() =>
+    settingsService.getCachedPaymentSettings()
+  );
+  const [logisticsSettings, setLogisticsSettings] = useState<LogisticsSettings>(() =>
+    settingsService.getCachedLogisticsSettings()
+  );
+
+  useEffect(() => {
+    // Always fetch latest from Firestore on mount
+    Promise.all([
+      settingsService.getPaymentSettings(true),
+      settingsService.getLogisticsSettings(true),
+    ]).then(([pay, log]) => {
+      setPaymentSettings(pay);
+      setLogisticsSettings(log);
+    });
+
+    const unsub = settingsService.subscribe(() => {
+      setPaymentSettings(settingsService.getCachedPaymentSettings());
+      setLogisticsSettings(settingsService.getCachedLogisticsSettings());
+    });
+    return unsub;
+  }, []);
+
   // Delivery fee calculation from admin site settings
-  const settings = storageService.getSettings();
-  const isDhaka = district === 'dhaka-city' || district === 'gazipur' || district === 'narayanganj';
-  const rawDeliveryFee = isDhaka ? settings.dhakaDeliveryFee : settings.outsideDhakaDeliveryFee;
-  const isFreeDelivery = subtotal >= settings.freeShippingThreshold;
+  const isDhaka =
+    district === 'dhaka-city' ||
+    district === 'gazipur' ||
+    district === 'narayanganj' ||
+    division.toLowerCase() === 'dhaka';
+  const rawDeliveryFee = isDhaka
+    ? logisticsSettings.deliveryChargeInsideDhaka
+    : logisticsSettings.deliveryChargeOutsideDhaka;
+  const isFreeDelivery =
+    logisticsSettings.freeShippingThreshold > 0 &&
+    subtotal >= logisticsSettings.freeShippingThreshold;
   const deliveryCharge = isFreeDelivery ? 0 : rawDeliveryFee;
   const grandTotal = Math.max(0, subtotal - discount + deliveryCharge);
 
@@ -221,7 +254,7 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
         senderMobile: paymentMethod === 'cod' ? '' : finalSenderMobile,
         transactionId: paymentMethod === 'cod' ? '' : finalTrxId,
         orderStatus: 'pending',
-        courierName: district.includes('dhaka') ? 'Steadfast Express' : 'Pathao Nationwide',
+        courierName: logisticsSettings.defaultCourier || 'Steadfast',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -583,11 +616,17 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
                           {paymentMethod.toUpperCase()} Merchant Number:
                         </span>
                         <span className="font-mono text-sm font-extrabold text-stone-900 bg-white px-2.5 py-1 rounded-lg border border-amber-300">
-                          {paymentMethod === 'bkash'
-                            ? settings.bkashMerchantNumber
-                            : paymentMethod === 'nagad'
-                            ? settings.nagadMerchantNumber
-                            : settings.rocketMerchantNumber}
+                          {(() => {
+                            const num =
+                              paymentMethod === 'bkash'
+                                ? paymentSettings.bkash?.number
+                                : paymentMethod === 'nagad'
+                                ? paymentSettings.nagad?.number
+                                : paymentMethod === 'rocket'
+                                ? paymentSettings.rocket?.number
+                                : '';
+                            return num || (language === 'bn' ? '(মার্চেন্ট নম্বর নির্ধারিত হয়নি)' : '(Not configured)');
+                          })()}
                         </span>
                       </div>
                       <p className="text-[11px] text-amber-900 leading-relaxed">

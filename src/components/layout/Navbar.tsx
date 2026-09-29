@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShoppingBag, 
   Search, 
@@ -7,15 +7,17 @@ import {
   Menu, 
   X, 
   ShieldCheck, 
-  Sparkles,
-  ChevronDown,
-  LogIn,
-  LogOut
+  Sparkles, 
+  ChevronDown, 
+  LogIn, 
+  LogOut 
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
 import { useAuth } from '../../context/AuthContext';
 import { storageService } from '../../services/storageService';
+import { settingsService } from '../../services/settingsService';
+import { WebsiteSettings } from '../../types';
 
 interface NavbarProps {
   currentView: string;
@@ -35,6 +37,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   const { user, isLoggedIn, isAdmin, openLoginModal, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [websiteSettings, setWebsiteSettings] = useState<WebsiteSettings>(() =>
+    settingsService.getCachedWebsiteSettings()
+  );
+
+  useEffect(() => {
+    settingsService.getWebsiteSettings().then((s) => setWebsiteSettings(s));
+    const unsub = settingsService.subscribe(() => {
+      setWebsiteSettings(settingsService.getCachedWebsiteSettings());
+    });
+    return unsub;
+  }, []);
 
   const navLinks = [
     { id: 'home', label: t.home, view: 'home' },
@@ -63,12 +76,20 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Brand Logo */}
           <div className="flex-shrink-0 flex items-center cursor-pointer" onClick={() => onNavigate('home')}>
             <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-600 to-amber-900 flex items-center justify-center text-white shadow-md shadow-amber-900/20 font-serif font-black text-xl tracking-tighter">
-                M
-              </div>
+              {websiteSettings.logo ? (
+                <img
+                  src={websiteSettings.logo}
+                  alt={websiteSettings.siteName || 'MINARUL'}
+                  className="w-10 h-10 object-contain rounded-xl"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-600 to-amber-900 flex items-center justify-center text-white shadow-md shadow-amber-900/20 font-serif font-black text-xl tracking-tighter">
+                  {(websiteSettings.siteName || 'M').charAt(0).toUpperCase()}
+                </div>
+              )}
               <div className="flex flex-col">
                 <span className="font-serif text-lg sm:text-2xl font-bold tracking-tight text-stone-900 leading-none">
-                  MINARUL
+                  {websiteSettings.siteName || 'MINARUL'}
                 </span>
                 <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-amber-700">
                   Fashion House

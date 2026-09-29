@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, ShieldCheck, Copy, Check, Loader2, ArrowRight, Phone } from 'lucide-react';
-import { PaymentMethod } from '../../types';
+import { PaymentMethod, PaymentSettings } from '../../types';
 import { useLanguage } from '../../context/LanguageContext';
-import { storageService } from '../../services/storageService';
+import { settingsService } from '../../services/settingsService';
 import { normalizePhoneNumber, isValidBangladeshiPhone } from '../../utils/phoneUtils';
 
 interface PaymentModalProps {
@@ -30,26 +30,40 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const [copied, setCopied] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const settings = storageService.getSettings();
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() =>
+    settingsService.getCachedPaymentSettings()
+  );
 
   useEffect(() => {
     if (isOpen) {
       setSenderMobile(initialSenderMobile);
       setTrxId(initialTrxId);
       setErrorMsg('');
+
+      // Always fetch latest from Firestore when modal opens to prevent stale cache
+      settingsService.getPaymentSettings(true).then((p) => {
+        setPaymentSettings(p);
+      });
     }
   }, [isOpen, initialSenderMobile, initialTrxId]);
+
+  useEffect(() => {
+    const unsub = settingsService.subscribe(() => {
+      setPaymentSettings(settingsService.getCachedPaymentSettings());
+    });
+    return unsub;
+  }, []);
 
   if (!isOpen) return null;
 
   const merchantNumber =
     method === 'bkash'
-      ? settings.bkashMerchantNumber
+      ? paymentSettings.bkash?.number || ''
       : method === 'nagad'
-      ? settings.nagadMerchantNumber
+      ? paymentSettings.nagad?.number || ''
       : method === 'rocket'
-      ? settings.rocketMerchantNumber
-      : '01712-345678';
+      ? paymentSettings.rocket?.number || ''
+      : '';
 
   const methodDetails = {
     bkash: {
@@ -166,17 +180,19 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               {language === 'bn' ? 'মিনারুল ফ্যাশন মার্চেন্ট অ্যাকাউন্ট নম্বর:' : 'Merchant Account Number:'}
             </label>
             <div className="flex items-center justify-between p-3 rounded-xl border border-stone-300 bg-stone-50">
-              <span className="font-mono text-base font-extrabold text-stone-900 tracking-wider">
-                {merchantNumber}
+              <span className={`font-mono text-base font-extrabold tracking-wider ${merchantNumber ? 'text-stone-900' : 'text-stone-400 text-xs italic font-sans'}`}>
+                {merchantNumber || (language === 'bn' ? '(মার্চেন্ট নম্বর নির্ধারিত হয়নি)' : '(Merchant number not configured)')}
               </span>
-              <button
-                type="button"
-                onClick={handleCopyNumber}
-                className="text-xs font-bold text-amber-700 hover:text-amber-800 flex items-center gap-1 transition-colors"
-              >
-                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-                <span>{copied ? (language === 'bn' ? 'কপি হয়েছে' : 'Copied') : (language === 'bn' ? 'কপি' : 'Copy')}</span>
-              </button>
+              {merchantNumber && (
+                <button
+                  type="button"
+                  onClick={handleCopyNumber}
+                  className="text-xs font-bold text-amber-700 hover:text-amber-800 flex items-center gap-1 transition-colors"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? (language === 'bn' ? 'কপি হয়েছে' : 'Copied') : (language === 'bn' ? 'কপি' : 'Copy')}</span>
+                </button>
+              )}
             </div>
           </div>
 

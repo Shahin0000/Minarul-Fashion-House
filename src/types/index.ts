@@ -120,13 +120,75 @@ export interface Coupon {
 
 export interface Review {
   id: string;
+  reviewId?: string;
   productId: string;
-  userName: string;
+  orderId?: string;
+  customerId?: string;
+  customerName?: string;
+  customerEmail?: string;
+  userName: string; // for backward compatibility
   userPhoneMasked?: string;
   rating: number;
-  comment: string;
+  comment: string; // for backward compatibility
+  reviewText?: string;
+  reviewImage?: string; // primary customer photo
+  reviewImages?: string[]; // multiple customer photos (1 to 5)
   date: string;
   verifiedPurchase: boolean;
+  status?: 'published' | 'pending' | 'hidden';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface ReviewReport {
+  reportId: string;
+  reviewId: string;
+  productId: string;
+  customerId?: string;
+  customerName?: string;
+  reason: string;
+  createdAt: any;
+}
+
+export interface WebsiteSettings {
+  siteName: string;
+  siteDescription: string;
+  logo: string;
+  phone: string;
+  email: string;
+  address: string;
+  facebook: string;
+  instagram: string;
+  whatsapp: string;
+  announcementEn?: string;
+  announcementBn?: string;
+  updatedAt?: any;
+}
+
+export interface PaymentAccount {
+  number: string;
+  enabled: boolean;
+}
+
+export interface PaymentSettings {
+  bkash: PaymentAccount;
+  nagad: PaymentAccount;
+  rocket: PaymentAccount;
+  updatedAt?: any;
+}
+
+export interface CourierService {
+  name: string;
+  enabled: boolean;
+}
+
+export interface LogisticsSettings {
+  defaultCourier: string;
+  deliveryChargeInsideDhaka: number;
+  deliveryChargeOutsideDhaka: number;
+  freeShippingThreshold: number;
+  courierServices: CourierService[];
+  updatedAt?: any;
 }
 
 export interface SiteSettings {
@@ -143,6 +205,12 @@ export interface SiteSettings {
   freeShippingThreshold: number;
   flagshipAddressEn: string;
   flagshipAddressBn: string;
+  siteName?: string;
+  siteDescription?: string;
+  logo?: string;
+  defaultCourier?: string;
+  facebook?: string;
+  instagram?: string;
 }
 
 export interface HeroSlide {

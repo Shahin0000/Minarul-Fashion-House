@@ -106,6 +106,46 @@
       },
       "required": ["productId", "userName", "rating", "comment"]
     },
+    "WebsiteSettings": {
+      "title": "WebsiteSettings",
+      "description": "Global website configuration, identity, contacts and announcements",
+      "type": "object",
+      "properties": {
+        "siteName": { "type": "string" },
+        "siteDescription": { "type": "string" },
+        "logo": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "facebook": { "type": "string" },
+        "instagram": { "type": "string" },
+        "whatsapp": { "type": "string" },
+        "announcementEn": { "type": "string" },
+        "announcementBn": { "type": "string" }
+      }
+    },
+    "PaymentSettings": {
+      "title": "PaymentSettings",
+      "description": "Mobile banking merchant accounts and gateways",
+      "type": "object",
+      "properties": {
+        "bkash": { "type": "object" },
+        "nagad": { "type": "object" },
+        "rocket": { "type": "object" }
+      }
+    },
+    "LogisticsSettings": {
+      "title": "LogisticsSettings",
+      "description": "Delivery charges, free shipping thresholds and courier partners",
+      "type": "object",
+      "properties": {
+        "defaultCourier": { "type": "string" },
+        "deliveryChargeInsideDhaka": { "type": "number" },
+        "deliveryChargeOutsideDhaka": { "type": "number" },
+        "freeShippingThreshold": { "type": "number" },
+        "courierServices": { "type": "array" }
+      }
+    },
     "SiteSettings": {
       "title": "SiteSettings",
       "description": "Global website configuration, delivery rates and merchant numbers",

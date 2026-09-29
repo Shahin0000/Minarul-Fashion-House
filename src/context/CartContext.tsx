@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { CartItem, Product, ProductColor, Coupon } from '../types';
 import { storageService } from '../services/storageService';
+import { settingsService } from '../services/settingsService';
 
 interface CartContextType {
   cart: CartItem[];
@@ -24,8 +25,6 @@ interface CartContextType {
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
-const FREE_SHIPPING_THRESHOLD = 2500;
-
 export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
@@ -45,6 +44,27 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return null;
     }
   });
+
+  const [freeShippingThreshold, setFreeShippingThreshold] = useState<number>(() => {
+    return settingsService.getCachedLogisticsSettings()?.freeShippingThreshold || 2500;
+  });
+
+  useEffect(() => {
+    settingsService.getLogisticsSettings().then((log) => {
+      if (log && typeof log.freeShippingThreshold === 'number') {
+        setFreeShippingThreshold(log.freeShippingThreshold);
+      }
+    });
+
+    const unsub = settingsService.subscribe(() => {
+      const log = settingsService.getCachedLogisticsSettings();
+      if (log && typeof log.freeShippingThreshold === 'number') {
+        setFreeShippingThreshold(log.freeShippingThreshold);
+      }
+    });
+
+    return unsub;
+  }, []);
 
   useEffect(() => {
     try {
@@ -210,7 +230,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAppliedCoupon(null);
   };
 
-  const amountNeededForFreeShipping = Math.max(0, FREE_SHIPPING_THRESHOLD - subtotal);
+  const amountNeededForFreeShipping = Math.max(0, freeShippingThreshold - subtotal);
 
   return (
     <CartContext.Provider
@@ -230,7 +250,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
         appliedCoupon,
         applyCoupon,
         removeCoupon,
-        freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
+        freeShippingThreshold,
         amountNeededForFreeShipping,
       }}
     >

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, 
   Star, 
@@ -11,7 +11,12 @@ import {
   Heart,
   Plus,
   Minus,
-  MessageSquare
+  MessageSquare,
+  PackageCheck,
+  Flag,
+  Image as ImageIcon,
+  CheckCircle2,
+  Sparkles
 } from 'lucide-react';
 import { Product, ProductColor, Review } from '../../types';
 import { useLanguage } from '../../context/LanguageContext';
@@ -20,6 +25,8 @@ import { useAuth } from '../../context/AuthContext';
 import { auth } from '../../firebase';
 import { storageService } from '../../services/storageService';
 import { SizeGuideModal } from './SizeGuideModal';
+import { ReviewModal } from './ReviewModal';
+import { ImageLightboxModal } from '../common/ImageLightboxModal';
 
 interface ProductDetailModalProps {
   product: Product | null;
@@ -42,7 +49,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 }) => {
   const { language, formatPrice, t } = useLanguage();
   const { addToCart, buyNow } = useCart();
-  const { openLoginModal } = useAuth();
+  const { user, openLoginModal } = useAuth();
 
   if (!isOpen || !product) return null;
 
@@ -53,15 +60,138 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   );
   const [quantity, setQuantity] = useState(1);
   const [showSizeGuide, setShowSizeGuide] = useState(false);
-  const [reviews, setReviews] = useState<Review[]>(() =>
-    storageService.getReviews(product.id)
-  );
 
-  // Review Form state
-  const [reviewerName, setReviewerName] = useState('');
-  const [reviewerRating, setReviewerRating] = useState(5);
-  const [reviewerComment, setReviewerComment] = useState('');
-  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  // Reviews & Rating System State
+  const [reviews, setReviews] = useState<Review[]>(() =>
+    storageService.getReviews(product.id, true)
+  );
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'highest' | 'lowest'>('newest');
+  const [visibleCount, setVisibleCount] = useState(4);
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [targetOrderId, setTargetOrderId] = useState<string>('');
+  
+  // Image Lightbox
+  const [lightboxImageUrl, setLightboxImageUrl] = useState<string>('');
+  const [lightboxTitle, setLightboxTitle] = useState<string>('');
+
+  // Subscribe to real-time review updates
+  useEffect(() => {
+    const updateReviews = () => {
+      setReviews(storageService.getReviews(product.id, true));
+    };
+    updateReviews();
+    const unsub = storageService.subscribe(updateReviews);
+    return unsub;
+  }, [product.id]);
+
+  // Check customer order eligibility
+  const eligibleDeliveredOrders = useMemo(() => {
+    if (!user) return [];
+    return storageService.getCustomerDeliveredOrdersForProduct(user.id, product.id);
+  }, [user, product.id, reviews]);
+
+  const unreviewedDeliveredOrder = useMemo(() => {
+    return eligibleDeliveredOrders.find((item) => !item.alreadyReviewed)?.order;
+  }, [eligibleDeliveredOrders]);
+
+  const hasAnyReviewed = useMemo(() => {
+    return eligibleDeliveredOrders.some((item) => item.alreadyReviewed);
+  }, [eligibleDeliveredOrders]);
+
+  // Rating Statistics & Breakdown calculation
+  const { averageRating, totalCount, distribution } = useMemo(() => {
+    const total = reviews.length;
+    if (total === 0) {
+      return {
+        averageRating: 5.0,
+        totalCount: 0,
+        distribution: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
+      };
+    }
+    const dist: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    let sum = 0;
+    for (const r of reviews) {
+      const star = Math.min(5, Math.max(1, Math.round(r.rating)));
+      dist[star] = (dist[star] || 0) + 1;
+      sum += r.rating;
+    }
+    const avg = Number((sum / total).toFixed(1));
+    return {
+      averageRating: avg,
+      totalCount: total,
+      distribution: dist,
+    };
+  }, [reviews]);
+
+  // Sorted reviews list
+  const sortedReviews = useMemo(() => {
+    const list = [...reviews];
+    list.sort((a, b) => {
+      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : new Date(a.date).getTime();
+      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : new Date(b.date).getTime();
+
+      if (sortBy === 'newest') return timeB - timeA;
+      if (sortBy === 'oldest') return timeA - timeB;
+      if (sortBy === 'highest') return b.rating - a.rating;
+      if (sortBy === 'lowest') return a.rating - b.rating;
+      return timeB - timeA;
+    });
+    return list;
+  }, [reviews, sortBy]);
+
+  const handleOpenWriteReview = (orderId?: string) => {
+    if (!user) {
+      onToast(
+        language === 'bn' ? 'রিভিউ দিতে অনুগ্রহ করে প্রথমে লগইন করুন।' : 'Please sign in to write a review.',
+        'info'
+      );
+      openLoginModal('login');
+      return;
+    }
+
+    const orderToReview = orderId || unreviewedDeliveredOrder?.id;
+    if (!orderToReview) {
+      if (hasAnyReviewed) {
+        onToast(
+          language === 'bn' 
+            ? 'আপনি এই প্রোডাক্টের জন্য ইতিমধ্যে রিভিউ প্রদান করেছেন।' 
+            : 'You have already reviewed this product.',
+          'info'
+        );
+      } else {
+        onToast(
+          language === 'bn'
+            ? 'শুধুমাত্র ডেলিভারি সম্পন্ন অর্ডারের প্রোডাক্টে রিভিউ দেওয়া যায়।'
+            : 'Reviews are only available after your order has been delivered.',
+          'info'
+        );
+      }
+      return;
+    }
+
+    setTargetOrderId(orderToReview);
+    setIsReviewModalOpen(true);
+  };
+
+  const handleReport = async (review: Review) => {
+    if (!user) {
+      openLoginModal('login');
+      return;
+    }
+    try {
+      await storageService.reportReview(
+        review.id,
+        product.id,
+        'Inappropriate content or spam reported by user'
+      );
+      onToast(
+        language === 'bn' ? 'রিভিউটি মডারেশনের জন্য রিপোর্ট করা হয়েছে।' : 'Review reported for moderation.',
+        'info'
+      );
+    } catch {
+      onToast('Report failed', 'error');
+    }
+  };
 
   const handleAddToCart = () => {
     addToCart(product, selectedSize, selectedColor, quantity);
@@ -122,35 +252,6 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     buyNow(product, selectedSize, selectedColor, quantity || 1);
     onClose();
     onNavigateToCheckout();
-  };
-
-  const handleReviewSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!reviewerName.trim() || !reviewerComment.trim()) {
-      onToast(
-        language === 'bn' ? 'অনুগ্রহ করে নাম এবং মতামত লিখুন' : 'Please provide your name and review comment',
-        'error'
-      );
-      return;
-    }
-
-    setIsSubmittingReview(true);
-    const newRev: Review = {
-      id: 'rev-' + Date.now(),
-      productId: product.id,
-      userName: reviewerName.trim(),
-      rating: reviewerRating,
-      comment: reviewerComment.trim(),
-      date: new Date().toISOString().split('T')[0],
-      verifiedPurchase: true,
-    };
-
-    storageService.addReview(newRev);
-    setReviews(storageService.getReviews(product.id));
-    setReviewerName('');
-    setReviewerComment('');
-    setIsSubmittingReview(false);
-    onToast(t.reviewSubmitted, 'success');
   };
 
   const discountPercent = product.originalPrice
@@ -415,126 +516,292 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             </div>
           </div>
 
-          {/* Customer Reviews Section */}
-          <div className="p-6 sm:p-8 bg-stone-50 border-t border-stone-200 space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <MessageSquare className="w-5 h-5 text-amber-700" />
-                <h3 className="font-serif text-lg font-bold text-stone-900">
-                  {t.customerReviews} ({reviews.length})
-                </h3>
+          {/* ========================================================================= */}
+          {/* CUSTOMER REVIEWS & RATINGS SECTION */}
+          {/* ========================================================================= */}
+          <div id="reviews-section" className="p-6 sm:p-8 bg-stone-50 border-t border-stone-200 space-y-6">
+            
+            {/* Header & Write Review Action */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-stone-200">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="w-5 h-5 text-amber-700" />
+                  <h3 className="font-serif text-lg font-bold text-stone-900">
+                    {language === 'bn' ? 'ক্রেতাদের রিভিউ ও রেটিং' : 'Customer Reviews & Ratings'}
+                  </h3>
+                </div>
+                <p className="text-xs text-stone-500">
+                  {language === 'bn' 
+                    ? 'শুধুমাত্র ডেলিভারি পাওয়া যাচাইকৃত ক্রেতাদের বাস্তব ছবি ও মতামত।' 
+                    : 'Authentic photos and reviews from verified customers after delivery.'}
+                </p>
               </div>
-              <div className="flex items-center gap-1 text-sm font-bold text-amber-600">
-                <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                <span>{product.rating} / 5.0</span>
+
+              {/* Write Review Button / Status */}
+              <div>
+                {unreviewedDeliveredOrder ? (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenWriteReview(unreviewedDeliveredOrder.id)}
+                    className="px-4 py-2.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-amber-900/10 transition-all cursor-pointer"
+                  >
+                    <Star className="w-4 h-4 fill-white text-white" />
+                    <span>{language === 'bn' ? 'রিভিউ দিন (+ছবি সহ)' : 'Write Review (+Photo)'}</span>
+                  </button>
+                ) : hasAnyReviewed ? (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>{language === 'bn' ? 'আপনি রিভিউ প্রদান করেছেন' : 'You have reviewed this product'}</span>
+                  </div>
+                ) : user ? (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-100 text-stone-600 text-xs">
+                    <PackageCheck className="w-4 h-4 text-amber-700" />
+                    <span>{language === 'bn' ? 'প্রোডাক্ট ডেলিভারির পর রিভিউ দিতে পারবেন' : 'Review available after delivery'}</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => openLoginModal('login')}
+                    className="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span>{language === 'bn' ? 'লগইন করে রিভিউ দিন' : 'Login to Review'}</span>
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Existing Reviews */}
-            <div className="space-y-3">
-              {reviews.length === 0 ? (
-                <p className="text-xs text-stone-500 py-2">
-                  {language === 'bn' ? 'এখনও কোনো রিভিউ যুক্ত হয়নি। আপনার মতামত দিয়ে প্রথম হোন!' : 'No reviews yet. Be the first to review this dress!'}
+            {/* Rating Breakdown Card */}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 p-6 bg-white rounded-2xl border border-stone-200 shadow-2xs items-center">
+              
+              {/* Average Rating Score */}
+              <div className="md:col-span-4 text-center md:text-left space-y-2 border-b md:border-b-0 md:border-r border-stone-100 pb-4 md:pb-0 md:pr-6">
+                <div className="flex items-baseline justify-center md:justify-start gap-2">
+                  <span className="text-4xl font-extrabold text-stone-900 font-serif">
+                    {totalCount > 0 ? averageRating : '5.0'}
+                  </span>
+                  <span className="text-xs text-stone-400">/ 5.0</span>
+                </div>
+
+                <div className="flex items-center justify-center md:justify-start gap-1 text-amber-400">
+                  {[1, 2, 3, 4, 5].map((s) => (
+                    <Star
+                      key={s}
+                      className={`w-4 h-4 ${
+                        s <= Math.round(averageRating) ? 'fill-amber-400 text-amber-400' : 'text-stone-200'
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                <p className="text-xs text-stone-500">
+                  {totalCount > 0 
+                    ? (language === 'bn' ? `সর্বমোট ${totalCount} টি যাচাইকৃত রিভিউ` : `Based on ${totalCount} verified reviews`)
+                    : (language === 'bn' ? 'এখনও কোনো রিভিউ যুক্ত হয়নি' : 'No customer reviews yet')}
                 </p>
+              </div>
+
+              {/* Star Distribution Bars */}
+              <div className="md:col-span-8 space-y-2 text-xs">
+                {[5, 4, 3, 2, 1].map((star) => {
+                  const count = distribution[star] || 0;
+                  const percent = totalCount > 0 ? Math.round((count / totalCount) * 100) : 0;
+                  return (
+                    <div key={star} className="flex items-center gap-3">
+                      <span className="w-10 text-stone-600 font-semibold flex items-center gap-0.5 justify-end">
+                        <span>{star}</span>
+                        <Star className="w-3 h-3 fill-amber-400 text-amber-400 inline" />
+                      </span>
+                      <div className="flex-1 h-2.5 bg-stone-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                      <span className="w-12 text-stone-400 text-[11px] font-mono text-right">
+                        {count} ({percent}%)
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Sorting Toolbar */}
+            {reviews.length > 1 && (
+              <div className="flex items-center justify-between text-xs pt-1">
+                <span className="text-stone-500 font-medium">
+                  {language === 'bn' ? `${reviews.length} টি রিভিউ প্রদর্শিত হচ্ছে:` : `Showing ${reviews.length} reviews:`}
+                </span>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-stone-500 text-[11px]">{language === 'bn' ? 'সাজান:' : 'Sort by:'}</span>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as any)}
+                    className="px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-stone-800 text-xs font-semibold focus:border-amber-600 outline-none cursor-pointer"
+                  >
+                    <option value="newest">{language === 'bn' ? 'নতুন রিভিউ আগে (Newest)' : 'Newest'}</option>
+                    <option value="oldest">{language === 'bn' ? 'পুরোনো রিভিউ আগে (Oldest)' : 'Oldest'}</option>
+                    <option value="highest">{language === 'bn' ? 'সর্বোচ্চ রেটিং (Highest Rating)' : 'Highest Rating'}</option>
+                    <option value="lowest">{language === 'bn' ? 'সর্বনিম্ন রেটিং (Lowest Rating)' : 'Lowest Rating'}</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* Review Cards List */}
+            <div className="space-y-4">
+              {reviews.length === 0 ? (
+                <div className="text-center py-10 bg-white rounded-2xl border border-stone-200 space-y-3">
+                  <Sparkles className="w-8 h-8 text-amber-500 mx-auto" />
+                  <p className="text-xs text-stone-600 font-semibold">
+                    {language === 'bn'
+                      ? 'এখনও কোনো রিভিউ দেওয়া হয়নি।'
+                      : 'No customer reviews yet for this product.'}
+                  </p>
+                  <p className="text-[11px] text-stone-400 max-w-sm mx-auto leading-relaxed">
+                    {language === 'bn'
+                      ? 'আপনি এই ড্রেসটি ক্রয় করে ডেলিভারি পেলে নিজের হাতে তোলা ছবি সহ প্রথম রিভিউ দিয়ে অন্য ক্রেতাদের উৎসাহিত করুন!'
+                      : 'Purchase this dress and be the first to share your real photo and feedback after delivery!'}
+                  </p>
+                </div>
               ) : (
-                reviews.map((rev) => (
-                  <div key={rev.id} className="bg-white p-4 rounded-xl border border-stone-200 space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
+                sortedReviews.slice(0, visibleCount).map((rev) => {
+                  const photos = rev.reviewImages && rev.reviewImages.length > 0 
+                    ? rev.reviewImages 
+                    : rev.reviewImage ? [rev.reviewImage] : [];
+
+                  return (
+                    <div 
+                      key={rev.id} 
+                      className="bg-white p-5 rounded-2xl border border-stone-200 space-y-3 shadow-2xs hover:border-stone-300 transition-colors"
+                    >
+                      {/* Top Bar: Stars, Date, Report */}
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <div className="flex gap-0.5 text-amber-400">
+                            {[...Array(5)].map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`w-3.5 h-3.5 ${
+                                  i < rev.rating ? 'fill-amber-400 text-amber-400' : 'text-stone-200'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <span className="font-bold text-amber-900 text-xs">
+                            {rev.rating}.0
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <span className="text-stone-400 text-[11px]">
+                            {rev.date}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleReport(rev)}
+                            className="text-stone-300 hover:text-stone-500 transition-colors cursor-pointer"
+                            title={language === 'bn' ? 'রিপোর্ট করুন' : 'Report'}
+                          >
+                            <Flag className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Customer Info & Verified Badge */}
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-stone-900">{rev.userName}</span>
+                        <span className="font-bold text-stone-900 text-xs">
+                          {rev.customerName || rev.userName}
+                        </span>
                         {rev.verifiedPurchase && (
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold">
-                            {language === 'bn' ? 'যাচাইকৃত ক্রেতা' : 'Verified Buyer'}
+                          <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-full font-bold">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>{language === 'bn' ? 'যাচাইকৃত ক্রেতা' : 'Verified Purchase'}</span>
                           </span>
                         )}
                       </div>
-                      <span className="text-stone-400 text-[10px]">{rev.date}</span>
+
+                      {/* Comment */}
+                      <p className="text-xs text-stone-700 leading-relaxed">
+                        {rev.reviewText || rev.comment}
+                      </p>
+
+                      {/* Customer Uploaded Photos */}
+                      {photos.length > 0 && (
+                        <div className="pt-2">
+                          <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider block mb-1.5">
+                            {language === 'bn' ? 'ক্রেতার তোলা ছবি:' : 'Customer Photos:'}
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {photos.map((imgUrl, pIdx) => (
+                              <button
+                                key={pIdx}
+                                type="button"
+                                onClick={() => {
+                                  setLightboxImageUrl(imgUrl);
+                                  setLightboxTitle(
+                                    `${rev.customerName || rev.userName} - ${product.titleEn}`
+                                  );
+                                }}
+                                className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-stone-200 bg-stone-100 hover:opacity-90 hover:scale-105 transition-all shadow-2xs group cursor-pointer"
+                              >
+                                <img
+                                  src={imgUrl}
+                                  alt="Customer Review Photo"
+                                  className="w-full h-full object-cover"
+                                />
+                                <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                  <ImageIcon className="w-4 h-4 text-white" />
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex gap-1 text-amber-400">
-                      {[...Array(5)].map((_, i) => (
-                        <Star
-                          key={i}
-                          className={`w-3.5 h-3.5 ${
-                            i < rev.rating ? 'fill-amber-400 text-amber-400' : 'text-stone-300'
-                          }`}
-                        />
-                      ))}
-                    </div>
-                    <p className="text-xs text-stone-700 leading-relaxed">{rev.comment}</p>
-                  </div>
-                ))
+                  );
+                })
+              )}
+
+              {/* Load More Button */}
+              {sortedReviews.length > visibleCount && (
+                <div className="text-center pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((prev) => prev + 4)}
+                    className="px-5 py-2 rounded-xl border border-stone-300 hover:bg-stone-100 text-stone-700 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    {language === 'bn' 
+                      ? `আরও রিভিউ দেখুন (${sortedReviews.length - visibleCount} বাকি)` 
+                      : `Load More Reviews (${sortedReviews.length - visibleCount} remaining)`}
+                  </button>
+                </div>
               )}
             </div>
-
-            {/* Write Review Form */}
-            <form onSubmit={handleReviewSubmit} className="bg-white p-5 rounded-2xl border border-stone-200 space-y-4">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-stone-800">
-                {t.writeReview}
-              </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-semibold text-stone-700 mb-1">
-                    {t.yourName} *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={reviewerName}
-                    onChange={(e) => setReviewerName(e.target.value)}
-                    placeholder="e.g. Asif Mahmud"
-                    className="w-full text-xs px-3 py-2 rounded-xl border border-stone-300 focus:border-amber-600 outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-stone-700 mb-1">
-                    {t.yourRating}
-                  </label>
-                  <div className="flex items-center gap-1 py-1">
-                    {[1, 2, 3, 4, 5].map((star) => (
-                      <button
-                        type="button"
-                        key={star}
-                        onClick={() => setReviewerRating(star)}
-                        className="text-amber-400 p-1 hover:scale-110 transition-transform"
-                      >
-                        <Star
-                          className={`w-5 h-5 ${
-                            star <= reviewerRating ? 'fill-amber-400 text-amber-400' : 'text-stone-300'
-                          }`}
-                        />
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-stone-700 mb-1">
-                  {t.description} *
-                </label>
-                <textarea
-                  required
-                  rows={2}
-                  value={reviewerComment}
-                  onChange={(e) => setReviewerComment(e.target.value)}
-                  placeholder={t.yourReview}
-                  className="w-full text-xs px-3 py-2 rounded-xl border border-stone-300 focus:border-amber-600 outline-none"
-                />
-              </div>
-
-              <div className="flex justify-end">
-                <button
-                  type="submit"
-                  disabled={isSubmittingReview}
-                  className="px-5 py-2 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold transition-colors disabled:opacity-50"
-                >
-                  {t.submitReview}
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       </div>
+
+      {/* Review Modal Trigger */}
+      <ReviewModal
+        isOpen={isReviewModalOpen}
+        onClose={() => setIsReviewModalOpen(false)}
+        product={product}
+        orderId={targetOrderId}
+        onSuccess={() => {
+          setReviews(storageService.getReviews(product.id, true));
+        }}
+        onToast={onToast}
+      />
+
+      {/* Image Lightbox Modal */}
+      <ImageLightboxModal
+        isOpen={Boolean(lightboxImageUrl)}
+        onClose={() => setLightboxImageUrl('')}
+        imageUrl={lightboxImageUrl}
+        title={lightboxTitle}
+      />
 
       <SizeGuideModal
         isOpen={showSizeGuide}
